@@ -14,10 +14,8 @@ from pathlib import Path
 
 KERNELS = (
     ("ScalarOA", "Linear probing", "#0072B2", "", 2.5),
-    ("ScalarGroupedOA", "Grouped, scalar", "#56B4E9", "6 4", 2.0),
-    ("ScalarCyclicGroupedOA", "Grouped, cyclic scalar", "#009E73", "", 2.0),
-    ("SIMDGroupedOA", "Grouped, SIMD per-lane masks", "#E69F00", "6 4", 2.0),
-    ("SIMDCombinedGroupedOA", "Grouped, SIMD combined mask", "#D55E00", "", 3.5),
+    ("ScalarCyclicGroupedOA", "Grouped, cyclic scalar", "#009E73", "", 2.5),
+    ("SIMDGroupedOA", "Grouped, SIMD", "#D55E00", "", 3.5),
 )
 PANELS = ((0, "All misses"), (50, "Half hits"), (100, "All hits"))
 # Neoverse V2 per-core L1D and L2, and the host's shared L3, as table bytes.

@@ -60,9 +60,7 @@ void checkLookup(
             throw std::runtime_error(std::string(name) + " lookup mismatch for key " + std::to_string(key));
     };
     check(scalar.find(key), "Scalar");
-    check(grouped.findScalar(key), "Scalar grouped");
     check(grouped.findSimd(key), "SIMD grouped");
-    check(grouped.findSimdCombined(key), "SIMD combined grouped");
     check(cyclic.findScalar(key), "Scalar cyclic grouped");
 }
 

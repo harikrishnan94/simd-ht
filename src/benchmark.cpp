@@ -124,12 +124,9 @@ int main(int argc, char ** argv)
     benchmark::AddCustomContext("query_seed", std::to_string(simd_ht::query_seed));
     benchmark::AddCustomContext("workload", "Distinct full-width keys; one shuffled N-key trace per batch");
     benchmark::RegisterBenchmark("ScalarOA", lookup<simd_ht::ScalarTable, &simd_ht::ScalarTable::find>)->Apply(arguments);
-    benchmark::RegisterBenchmark("ScalarGroupedOA", lookup<simd_ht::GroupedTable, &simd_ht::GroupedTable::findScalar>)->Apply(arguments);
-    benchmark::RegisterBenchmark("SIMDGroupedOA", lookup<simd_ht::GroupedTable, &simd_ht::GroupedTable::findSimd>)->Apply(arguments);
-    benchmark::RegisterBenchmark("SIMDCombinedGroupedOA", lookup<simd_ht::GroupedTable, &simd_ht::GroupedTable::findSimdCombined>)
-        ->Apply(arguments);
     benchmark::RegisterBenchmark("ScalarCyclicGroupedOA", lookup<simd_ht::CyclicGroupedTable, &simd_ht::CyclicGroupedTable::findScalar>)
         ->Apply(arguments);
+    benchmark::RegisterBenchmark("SIMDGroupedOA", lookup<simd_ht::GroupedTable, &simd_ht::GroupedTable::findSimd>)->Apply(arguments);
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
     return benchmark_failed ? 1 : 0;

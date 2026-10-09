@@ -156,57 +156,7 @@ public:
         }
     }
 
-    const Value * findScalar(Key key) const
-    {
-        if (key == 0)
-            return nullptr;
-        size_t pos = (hashKey(key) & cell_mask) >> 2;
-        for (;;)
-        {
-            const auto & group = groups[pos];
-            bool empty = false;
-            for (size_t lane = 0; lane < 4; ++lane)
-            {
-                if (group.keys[lane] == key)
-                    return &group.values[lane];
-                empty |= group.keys[lane] == 0;
-            }
-            if (empty)
-                return nullptr;
-            pos = (pos + 1) & (cell_mask >> 2);
-        }
-    }
-
     const Value * findSimd(Key key) const
-    {
-        if (key == 0)
-            return nullptr;
-        using Batch = xsimd::batch<Key, LookupArch>;
-        static_assert(Batch::size == 2 || Batch::size == 4);
-        const Batch needle(key);
-        const Batch zero(Key{0});
-        const size_t group_mask = cell_mask >> 2;
-        size_t pos = (hashKey(key) & cell_mask) >> 2;
-        for (;;)
-        {
-            const auto & group = groups[pos];
-            uint64_t matches = 0;
-            uint64_t empty = 0;
-            for (size_t lane = 0; lane < 4; lane += Batch::size)
-            {
-                const auto keys = Batch::load_aligned(group.keys + lane);
-                matches |= (keys == needle).mask() << lane;
-                empty |= (keys == zero).mask() << lane;
-            }
-            if (matches)
-                return &group.values[std::countr_zero(matches)];
-            if (empty)
-                return nullptr;
-            pos = (pos + 1) & group_mask;
-        }
-    }
-
-    const Value * findSimdCombined(Key key) const
     {
         if (key == 0)
             return nullptr;

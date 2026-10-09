@@ -1,24 +1,22 @@
 # simd-ht
 
 How fast can one CPU core look up 64-bit keys in a hash table that is far larger than its caches?
-This repository measures five lookup kernels for an open-addressing hash table on an Arm Neoverse V2
+This repository measures three lookup kernels for an open-addressing hash table on an Arm Neoverse V2
 core, with tables from 32 KiB to 8 GiB.
 
 The fastest kernel tests four keys with two NEON compares and one branch. In an 8 GiB table it
 finishes a miss in **14.57 ns**. Textbook linear probing needs **36.53 ns** for the same miss.
 Hits take 15.30 ns against 15.74 ns.
 
-![Lookup time against table size for the five kernels](docs/lookup-time.svg)
+![Lookup time against table size for the three kernels](docs/lookup-time.svg)
 
 Median nanoseconds per lookup in an 8 GiB table (2^28 keys), lower is better:
 
 | Kernel | All misses | Half hits | All hits |
 | --- | ---: | ---: | ---: |
 | Linear probing (`ScalarOA`) | 36.53 | 40.82 | 15.74 |
-| Grouped, scalar (`ScalarGroupedOA`) | 35.31 | 30.55 | 20.51 |
 | Grouped, cyclic scalar (`ScalarCyclicGroupedOA`) | 26.87 | 26.39 | 16.08 |
-| Grouped, SIMD per-lane masks (`SIMDGroupedOA`) | 28.46 | 31.10 | 22.69 |
-| **Grouped, SIMD combined mask** (`SIMDCombinedGroupedOA`) | **14.57** | **19.36** | **15.30** |
+| **Grouped, SIMD** (`SIMDGroupedOA`) | **14.57** | **19.36** | **15.30** |
 
 Full results for all ten table sizes, the hardware counters, and the method are in
 [RESULTS.md](RESULTS.md).
@@ -54,7 +52,9 @@ Grouped: one 64-byte group per cache line
 
 Both layouts use 16 bytes per slot, so a key's home group starts at the same offset as its home
 cell's cache line would in the linear layout. Inserting into a group takes the first empty lane.
-When the group is full, the key goes to the next group.
+When the group is full, the key goes to the next group. The two grouped tables differ only in lane
+order: `SIMDGroupedOA`'s table fills lanes 0 to 3 in order, and `ScalarCyclicGroupedOA`'s table
+starts at lane `hash & 3` and wraps around.
 
 ## Why linear probing loses on misses
 
@@ -80,21 +80,21 @@ lines, and a miss reads 1.375 lines on average.
 At load factor 0.5, 16.3% of groups are full. So a miss ends in its home cache line 83.7% of the
 time, and a hit reads 1.05 lines on average, against 1.125 for linear probing.
 
-The grouped layout alone does not make the scalar code fast. `ScalarGroupedOA` scans lanes 0 to 3
-in order, but the wanted key sits in whichever lane was free when it was inserted. Its first
-compare matches only 43% of hits, against 75% for linear probing, and a hit compares 2.10 keys.
-
-## Cyclic: start where the hash points
+## Cyclic scalar: start where the hash points
 
 `ScalarCyclicGroupedOA` starts both insertion and lookup at lane `hash & 3` and wraps around the
-group. That restores linear probing's first-compare match rate (75%) and compare count (1.52 per
-hit), while each probe still reads one cache line. The lookup can stop at the first
-empty lane in that order, because insertion filled the lanes in the same order and nothing is ever
-deleted.
+group. Its first compare finds 75% of hits, the same as linear probing, and a hit compares 1.52
+keys on average. Each probe still reads one cache line. The lookup can stop at the first empty lane
+in that order, because insertion filled the lanes in the same order and nothing is ever deleted.
+
+Why not simply scan lanes 0 to 3? Keys sit in whichever lane was free when they were inserted. A
+scalar scan from lane 0 finds only 43% of hits with its first compare and compares 2.10 keys per
+hit. That version took 20.51 ns per hit in the 8 GiB table, against 16.08 ns for the cyclic scan.
+Its full numbers are in [RESULTS.md](RESULTS.md#earlier-designs).
 
 ## SIMD: four keys, one branch
 
-`SIMDCombinedGroupedOA` compares all four keys of a group at once. The NEON code that Clang 22
+`SIMDGroupedOA` compares all four keys of a group at once. The NEON code that Clang 22
 generates for one group is:
 
 ```asm
@@ -121,11 +121,11 @@ Two facts about the table make the rest cheap:
 A hit in the home group runs 29 instructions, including hashing and the benchmark loop. A miss
 that ends in the home group runs 26.
 
-The first SIMD kernel, `SIMDGroupedOA`, makes the same two compares. It then moves each 64-bit
-result to a general register separately and rebuilds a 4-bit mask, which takes eight instructions
-before the branch. It repeats all of that to test for an empty lane. A hit costs 34 instructions
-and a home-group miss 39. In the 8 GiB table it takes 22.69 ns per hit, against 15.74 ns for linear
-probing.
+Why not move each compare result out separately? An earlier version made the same two compares,
+then moved each 64-bit result to a general register and rebuilt a 4-bit mask. That takes eight
+instructions before the branch, and the version repeated all of it to test for an empty lane. A hit
+cost 34 instructions and a home-group miss 39. In the 8 GiB table it took 22.69 ns per hit and
+28.46 ns per miss.
 
 On x86-64, the same code compiles to one 256-bit `vpcmpeqq`, one `vmovmskpd`, and the same lane-3
 exit. That build compiles but has not been run or measured.
@@ -137,19 +137,22 @@ Hardware counters per lookup in the 8 GiB table:
 | Kernel | Miss: instructions | Miss: cycles | Miss: branch misses | Hit: instructions | Hit: cycles | Hit: branch misses |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | Linear probing | 28.50 | 100.6 | 1.42 | 24.75 | 43.7 | 0.57 |
-| Grouped, scalar | 34.68 | 98.4 | 1.36 | 27.21 | 57.1 | 1.05 |
 | Grouped, cyclic scalar | 34.15 | 75.0 | 1.30 | 27.34 | 45.0 | 0.53 |
-| Grouped, SIMD per-lane masks | 45.17 | 79.5 | 0.25 | 35.34 | 63.6 | 0.05 |
-| Grouped, SIMD combined mask | 28.97 | 40.5 | 0.29 | 29.69 | 43.1 | 0.05 |
+| Grouped, SIMD | 28.97 | 40.5 | 0.29 | 29.69 | 43.1 | 0.05 |
 
-The two SIMD kernels mispredict about as often (0.25 and 0.29 times per miss), touch the same
-cache lines, and run the same hashing. The combined-mask kernel runs 36% fewer instructions per
-miss and needs 49% fewer cycles. The counters fit a simple picture: the core overlaps independent
-lookups up to the size of its out-of-order window, so fewer instructions per lookup and fewer
-mispredictions mean more cache misses in flight at once. The counters do not prove that cause.
+The cyclic scalar lookup reads the same cache lines as the SIMD lookup, because both grouped tables
+hold the same number of keys in each group. Per miss, it mispredicts 1.30 times against 0.29, runs
+34.15 instructions against 28.97, and needs 75.0 cycles against 40.5.
 
-On hits, the combined-mask kernel runs 20% more instructions than linear probing (29.69 against
-24.75) but mispredicts a tenth as often. Both need about 43 cycles per hit.
+The per-lane-mask version of the SIMD lookup mispredicted about as often as the current one (0.25
+against 0.29 times per miss) and read the same lines. It ran 45.17 instructions and 79.5 cycles per
+miss, so 36% fewer instructions brought 49% fewer cycles. The counters fit a simple picture: the
+core overlaps independent lookups up to the size of its out-of-order window, so fewer instructions
+per lookup and fewer mispredictions mean more cache misses in flight at once. The counters do not
+prove that cause.
+
+On hits, the SIMD lookup runs 20% more instructions than linear probing (29.69 against 24.75) but
+mispredicts a tenth as often. Both need about 43 cycles per hit.
 
 ## Where each kernel wins
 
@@ -157,14 +160,14 @@ On hits, the combined-mask kernel runs 20% more instructions than linear probing
   pass, and the branch predictor learns it. Linear probing mispredicts 0.001 to 0.003 times per miss
   at these sizes, against 1.0 at 512 KiB. With no mispredictions and no cache misses, instruction
   count decides. Linear probing wins hits (1.58 ns against 1.99 ns at 32 KiB) and half hits. The
-  combined-mask kernel still wins misses (1.61 ns against 1.91 ns). Treat these two sizes as a best
-  case for linear probing.
+  SIMD lookup still wins misses (1.61 ns against 1.91 ns). Treat these two sizes as a best case for
+  linear probing.
 - **512 KiB.** The trace is now too long to learn. Linear-probing misses jump to 11.17 ns, while the
-  combined-mask kernel takes 2.25 ns, five times less. With all hits, linear probing, cyclic scalar,
-  and combined-mask lookups are within run-to-run noise (2.41 to 2.48 ns).
-- **2 MiB to 8 GiB.** The combined-mask kernel is fastest in every row. Its range of runs is separate
-  from every other kernel's in every row except all hits at 32 MiB. Against linear probing it is 2.1
-  to 2.8 times faster on misses and 1.4 to 2.1 times faster with half hits. With all hits the gap
+  SIMD lookup takes 2.25 ns, five times less. With all hits, the three kernels are within run-to-run
+  noise (2.41 to 2.48 ns).
+- **2 MiB to 8 GiB.** The SIMD lookup is fastest in every row. Its range of runs is separate from
+  both other kernels' in every row except all hits at 32 MiB. Against linear probing it is 2.1 to
+  2.8 times faster on misses and 1.4 to 2.1 times faster with half hits. With all hits the gap
   shrinks from 1.7 times at 2 MiB to 2 to 3% at 128 MiB and above.
 
 ## Limits
@@ -250,7 +253,7 @@ build/oa_probe_stats 28
 
 | Path | Contents |
 | --- | --- |
-| `src/hash_tables.hpp` | The two table layouts and all five lookups |
+| `src/hash_tables.hpp` | The two table layouts and the three lookups |
 | `src/workload.hpp` | Key generation and shuffled query traces |
 | `src/benchmark.cpp` | Google Benchmark harness |
 | `src/perf_counters.hpp` | Optional Linux perf counters, enabled by `OA_PMU=1` |

@@ -111,8 +111,8 @@ public:
                 }
     }
 
-    /// Scalar scan: lane-zero grouped lookup compares a whole group before testing for an empty lane,
-    /// while the cyclic lookup stops at the first empty lane.
+    /// Scalar scan in lane order. The lane-zero scan compares a whole group before testing for an empty lane;
+    /// the cyclic scan stops at the first empty lane, like CyclicGroupedTable::findScalar.
     Probe find(Key key) const
     {
         Probe probe;
@@ -164,22 +164,14 @@ void require(bool condition, const std::string & message)
 
 /// Checks that the replay puts every key where the real table does. Value addresses differ by 16 bytes per
 /// cell, or by 64 bytes per group plus 8 bytes per lane, so differences from the first key locate each slot.
-template <class Table, class Replay>
+template <class Table, auto Find, class Replay>
 void verify(size_t distinct_keys, const Replay & replay, bool grouped, const char * name)
 {
     Table table(distinct_keys);
     for (size_t i = 0; i < distinct_keys; ++i)
         table.insert(simd_ht::keyForIndex(i), 0);
     const auto address = [&](size_t slot) { return static_cast<std::intptr_t>(grouped ? slot / 4 * 64 + slot % 4 * 8 : slot * 16); };
-    const auto actual = [&](Key key)
-    {
-        const simd_ht::Value * value = nullptr;
-        if constexpr (requires { table.findScalar(key); })
-            value = table.findScalar(key);
-        else
-            value = table.find(key);
-        return reinterpret_cast<std::intptr_t>(value);
-    };
+    const auto actual = [&](Key key) { return reinterpret_cast<std::intptr_t>((table.*Find)(key)); };
     const Key first = simd_ht::keyForIndex(0);
     const std::intptr_t first_actual = actual(first);
     const std::intptr_t first_expected = address(replay.find(first).slot);
@@ -273,9 +265,10 @@ int main(int argc, char ** argv)
         }
         if (verify_slots)
         {
-            verify<simd_ht::ScalarTable>(distinct_keys, linear, false, "ScalarTable");
-            verify<simd_ht::GroupedTable>(distinct_keys, lane_zero, true, "GroupedTable");
-            verify<simd_ht::CyclicGroupedTable>(distinct_keys, cyclic, true, "CyclicGroupedTable");
+            verify<simd_ht::ScalarTable, &simd_ht::ScalarTable::find>(distinct_keys, linear, false, "ScalarTable");
+            verify<simd_ht::GroupedTable, &simd_ht::GroupedTable::findSimd>(distinct_keys, lane_zero, true, "GroupedTable");
+            verify<simd_ht::CyclicGroupedTable, &simd_ht::CyclicGroupedTable::findScalar>(
+                distinct_keys, cyclic, true, "CyclicGroupedTable");
         }
 
         const auto [linear_hits, linear_misses] = measure(distinct_keys, linear);
@@ -288,9 +281,9 @@ int main(int argc, char ** argv)
             "| Miss: key compares | Miss: lines | Miss: 2+ lines |\n");
         std::printf("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
         printRow("Linear (ScalarOA)", linear_hits, linear_misses);
-        printRow("Grouped, lane 0 first (ScalarGroupedOA)", lane_zero_hits, lane_zero_misses);
+        printRow("Grouped, lane 0 first (layout of SIMDGroupedOA)", lane_zero_hits, lane_zero_misses);
         printRow("Grouped, lane hash & 3 first (ScalarCyclicGroupedOA)", cyclic_hits, cyclic_misses);
-        std::printf("\nSIMD lookups read whole groups in lane-zero placement, so they touch the same lines as ScalarGroupedOA.\n");
+        std::printf("\nSIMDGroupedOA reads the lane 0 layout one whole group at a time, so its line counts match that row.\n");
         std::printf("Full groups: %.2f%% of all groups.\n\n", 100.0 * lane_zero.fullGroupFraction());
 
         std::printf("Share of lookups by key compares before the loop exits:\n\n");
