@@ -1,0 +1,110 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="490" viewBox="0 0 1200 490" font-family="Helvetica, Arial, sans-serif">
+<rect width="1200" height="490" fill="white"/>
+<text x="70" y="30" font-size="20" font-weight="bold" fill="#222">Hash table lookup time on Neoverse V2, load factor 0.5</text>
+<text x="70" y="52" font-size="13" fill="#555">Nanoseconds per lookup, lower is better. Independent shuffled queries on one core; each point is the median of 5 runs.</text>
+<text x="240.0" y="84" font-size="15" font-weight="bold" text-anchor="middle" fill="#222">All misses</text>
+<line x1="70" x2="410" y1="392.0" y2="392.0" stroke="#e5e5e5"/>
+<text x="62" y="396.0" font-size="12" text-anchor="end" fill="#555">0</text>
+<line x1="70" x2="410" y1="358.7" y2="358.7" stroke="#e5e5e5"/>
+<text x="62" y="362.7" font-size="12" text-anchor="end" fill="#555">5</text>
+<line x1="70" x2="410" y1="325.3" y2="325.3" stroke="#e5e5e5"/>
+<text x="62" y="329.3" font-size="12" text-anchor="end" fill="#555">10</text>
+<line x1="70" x2="410" y1="292.0" y2="292.0" stroke="#e5e5e5"/>
+<text x="62" y="296.0" font-size="12" text-anchor="end" fill="#555">15</text>
+<line x1="70" x2="410" y1="258.7" y2="258.7" stroke="#e5e5e5"/>
+<text x="62" y="262.7" font-size="12" text-anchor="end" fill="#555">20</text>
+<line x1="70" x2="410" y1="225.3" y2="225.3" stroke="#e5e5e5"/>
+<text x="62" y="229.3" font-size="12" text-anchor="end" fill="#555">25</text>
+<line x1="70" x2="410" y1="192.0" y2="192.0" stroke="#e5e5e5"/>
+<text x="62" y="196.0" font-size="12" text-anchor="end" fill="#555">30</text>
+<line x1="70" x2="410" y1="158.7" y2="158.7" stroke="#e5e5e5"/>
+<text x="62" y="162.7" font-size="12" text-anchor="end" fill="#555">35</text>
+<line x1="70" x2="410" y1="125.3" y2="125.3" stroke="#e5e5e5"/>
+<text x="62" y="129.3" font-size="12" text-anchor="end" fill="#555">40</text>
+<line x1="70" x2="410" y1="92.0" y2="92.0" stroke="#e5e5e5"/>
+<text x="62" y="96.0" font-size="12" text-anchor="end" fill="#555">45</text>
+<line x1="88.9" x2="88.9" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="91.9" y="104" font-size="10" fill="#777">L1 64 KiB</text>
+<line x1="183.3" x2="183.3" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="186.3" y="104" font-size="10" fill="#777">L2 2 MiB</text>
+<line x1="262.1" x2="262.1" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="265.1" y="104" font-size="10" fill="#777">L3 36 MiB</text>
+<text x="107.8" y="409" font-size="11" text-anchor="middle" fill="#555">128 KiB</text>
+<text x="183.3" y="409" font-size="11" text-anchor="middle" fill="#555">2 MiB</text>
+<text x="258.9" y="409" font-size="11" text-anchor="middle" fill="#555">32 MiB</text>
+<text x="334.4" y="409" font-size="11" text-anchor="middle" fill="#555">512 MiB</text>
+<text x="410.0" y="409" font-size="11" text-anchor="middle" fill="#555">8 GiB</text>
+<rect x="70" y="92" width="340" height="300" fill="none" stroke="#bbb"/>
+<polyline points="70.0,379.3 107.8,377.5 145.6,317.5 183.3,302.8 221.1,280.8 258.9,249.4 296.7,201.4 334.4,165.4 372.2,153.6 410.0,148.5" fill="none" stroke="#0072B2" stroke-width="2.5" stroke-linejoin="round"/>
+<polyline points="70.0,375.3 107.8,373.1 145.6,350.9 183.3,305.4 221.1,285.7 258.9,256.1 296.7,190.0 334.4,170.6 372.2,162.3 410.0,156.6" fill="none" stroke="#56B4E9" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round"/>
+<polyline points="70.0,376.1 107.8,374.7 145.6,327.5 183.3,310.8 221.1,296.1 258.9,272.9 296.7,235.3 334.4,222.1 372.2,217.7 410.0,212.9" fill="none" stroke="#009E73" stroke-width="2.0" stroke-linejoin="round"/>
+<polyline points="70.0,361.4 107.8,358.7 145.6,356.9 183.3,340.1 221.1,319.7 258.9,265.7 296.7,216.4 334.4,209.4 372.2,206.8 410.0,202.3" fill="none" stroke="#E69F00" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round"/>
+<polyline points="70.0,381.3 107.8,380.3 145.6,377.0 183.3,359.9 221.1,351.3 258.9,327.4 296.7,303.3 334.4,298.3 372.2,297.3 410.0,294.9" fill="none" stroke="#D55E00" stroke-width="3.5" stroke-linejoin="round"/>
+<text x="620.0" y="84" font-size="15" font-weight="bold" text-anchor="middle" fill="#222">Half hits</text>
+<line x1="450" x2="790" y1="392.0" y2="392.0" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="358.7" y2="358.7" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="325.3" y2="325.3" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="292.0" y2="292.0" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="258.7" y2="258.7" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="225.3" y2="225.3" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="192.0" y2="192.0" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="158.7" y2="158.7" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="125.3" y2="125.3" stroke="#e5e5e5"/>
+<line x1="450" x2="790" y1="92.0" y2="92.0" stroke="#e5e5e5"/>
+<line x1="468.9" x2="468.9" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="471.9" y="104" font-size="10" fill="#777">L1 64 KiB</text>
+<line x1="563.3" x2="563.3" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="566.3" y="104" font-size="10" fill="#777">L2 2 MiB</text>
+<line x1="642.1" x2="642.1" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="645.1" y="104" font-size="10" fill="#777">L3 36 MiB</text>
+<text x="487.8" y="409" font-size="11" text-anchor="middle" fill="#555">128 KiB</text>
+<text x="563.3" y="409" font-size="11" text-anchor="middle" fill="#555">2 MiB</text>
+<text x="638.9" y="409" font-size="11" text-anchor="middle" fill="#555">32 MiB</text>
+<text x="714.4" y="409" font-size="11" text-anchor="middle" fill="#555">512 MiB</text>
+<text x="790.0" y="409" font-size="11" text-anchor="middle" fill="#555">8 GiB</text>
+<rect x="450" y="92" width="340" height="300" fill="none" stroke="#bbb"/>
+<polyline points="450.0,380.6 487.8,379.4 525.6,346.5 563.3,302.7 601.1,275.9 638.9,239.7 676.7,169.1 714.4,137.0 752.2,125.8 790.0,119.8" fill="none" stroke="#0072B2" stroke-width="2.5" stroke-linejoin="round"/>
+<polyline points="450.0,378.2 487.8,376.9 525.6,334.5 563.3,300.9 601.1,286.7 638.9,262.1 676.7,215.3 714.4,200.9 752.2,196.6 790.0,188.3" fill="none" stroke="#56B4E9" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round"/>
+<polyline points="450.0,378.1 487.8,377.2 525.6,328.5 563.3,310.9 601.1,295.2 638.9,274.7 676.7,236.7 714.4,226.1 752.2,223.2 790.0,216.0" fill="none" stroke="#009E73" stroke-width="2.0" stroke-linejoin="round"/>
+<polyline points="450.0,366.1 487.8,364.2 525.6,361.6 563.3,311.0 601.1,294.4 638.9,252.8 676.7,208.7 714.4,196.8 752.2,192.2 790.0,184.7" fill="none" stroke="#E69F00" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round"/>
+<polyline points="450.0,379.7 487.8,379.3 525.6,377.8 563.3,327.3 601.1,316.3 638.9,301.0 676.7,274.5 714.4,268.2 752.2,266.5 790.0,262.9" fill="none" stroke="#D55E00" stroke-width="3.5" stroke-linejoin="round"/>
+<text x="1000.0" y="84" font-size="15" font-weight="bold" text-anchor="middle" fill="#222">All hits</text>
+<line x1="830" x2="1170" y1="392.0" y2="392.0" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="358.7" y2="358.7" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="325.3" y2="325.3" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="292.0" y2="292.0" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="258.7" y2="258.7" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="225.3" y2="225.3" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="192.0" y2="192.0" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="158.7" y2="158.7" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="125.3" y2="125.3" stroke="#e5e5e5"/>
+<line x1="830" x2="1170" y1="92.0" y2="92.0" stroke="#e5e5e5"/>
+<line x1="848.9" x2="848.9" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="851.9" y="104" font-size="10" fill="#777">L1 64 KiB</text>
+<line x1="943.3" x2="943.3" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="946.3" y="104" font-size="10" fill="#777">L2 2 MiB</text>
+<line x1="1022.1" x2="1022.1" y1="92" y2="392" stroke="#999" stroke-dasharray="3 3"/>
+<text x="1025.1" y="104" font-size="10" fill="#777">L3 36 MiB</text>
+<text x="867.8" y="409" font-size="11" text-anchor="middle" fill="#555">128 KiB</text>
+<text x="943.3" y="409" font-size="11" text-anchor="middle" fill="#555">2 MiB</text>
+<text x="1018.9" y="409" font-size="11" text-anchor="middle" fill="#555">32 MiB</text>
+<text x="1094.4" y="409" font-size="11" text-anchor="middle" fill="#555">512 MiB</text>
+<text x="1170.0" y="409" font-size="11" text-anchor="middle" fill="#555">8 GiB</text>
+<rect x="830" y="92" width="340" height="300" fill="none" stroke="#bbb"/>
+<polyline points="830.0,381.5 867.8,380.8 905.6,375.5 943.3,353.8 981.1,341.5 1018.9,322.7 1056.7,295.9 1094.4,290.7 1132.2,290.3 1170.0,287.1" fill="none" stroke="#0072B2" stroke-width="2.5" stroke-linejoin="round"/>
+<polyline points="830.0,381.0 867.8,380.4 905.6,339.3 943.3,322.0 981.1,312.2 1018.9,295.4 1056.7,269.3 1094.4,260.0 1132.2,258.0 1170.0,255.3" fill="none" stroke="#56B4E9" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round"/>
+<polyline points="830.0,380.0 867.8,379.4 905.6,375.9 943.3,355.1 981.1,343.2 1018.9,323.6 1056.7,294.2 1094.4,288.4 1132.2,286.9 1170.0,284.8" fill="none" stroke="#009E73" stroke-width="2.0" stroke-linejoin="round"/>
+<polyline points="830.0,370.3 867.8,369.1 905.6,366.7 943.3,359.5 981.1,346.0 1018.9,299.3 1056.7,257.2 1094.4,247.0 1132.2,244.4 1170.0,240.7" fill="none" stroke="#E69F00" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round"/>
+<polyline points="830.0,378.8 867.8,378.0 905.6,375.6 943.3,369.4 981.1,360.1 1018.9,328.4 1056.7,298.7 1094.4,293.0 1132.2,292.0 1170.0,290.0" fill="none" stroke="#D55E00" stroke-width="3.5" stroke-linejoin="round"/>
+<text x="620.0" y="430" font-size="12" text-anchor="middle" fill="#555">Table size (32 bytes per key; 2^10 to 2^28 keys)</text>
+<line x1="70" x2="98" y1="458" y2="458" stroke="#0072B2" stroke-width="2.5"/>
+<text x="104" y="462" font-size="12" fill="#222">Linear probing</text>
+<line x1="290" x2="318" y1="458" y2="458" stroke="#56B4E9" stroke-width="2.0" stroke-dasharray="6 4"/>
+<text x="324" y="462" font-size="12" fill="#222">Grouped, scalar</text>
+<line x1="510" x2="538" y1="458" y2="458" stroke="#009E73" stroke-width="2.0"/>
+<text x="544" y="462" font-size="12" fill="#222">Grouped, cyclic scalar</text>
+<line x1="730" x2="758" y1="458" y2="458" stroke="#E69F00" stroke-width="2.0" stroke-dasharray="6 4"/>
+<text x="764" y="462" font-size="12" fill="#222">Grouped, SIMD per-lane masks</text>
+<line x1="950" x2="978" y1="458" y2="458" stroke="#D55E00" stroke-width="3.5"/>
+<text x="984" y="462" font-size="12" fill="#222">Grouped, SIMD combined mask</text>
+</svg>
