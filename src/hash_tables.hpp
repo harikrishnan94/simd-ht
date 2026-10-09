@@ -206,6 +206,42 @@ public:
         }
     }
 
+    const Value * findSimdCombined(Key key) const
+    {
+        if (key == 0)
+            return nullptr;
+        using Batch = xsimd::batch<Key, LookupArch>;
+        const Batch needle(key);
+        const size_t group_mask = cell_mask >> 2;
+        size_t pos = (hashKey(key) & cell_mask) >> 2;
+        for (;;)
+        {
+            const auto & group = groups[pos];
+#if defined(SIMD_HT_NEON64)
+            static_assert(Batch::size == 2);
+            const uint64x2_t low = Batch::load_aligned(group.keys) == needle;
+            const uint64x2_t high = Batch::load_aligned(group.keys + 2) == needle;
+            // Lane i's comparison fills bits [16 * i, 16 * i + 16).
+            const uint16x4_t fields = vmovn_u32(vuzp1q_u32(vreinterpretq_u32_u64(low), vreinterpretq_u32_u64(high)));
+            const uint64_t matches = vget_lane_u64(vreinterpret_u64_u16(fields), 0);
+            // A key occupies at most one slot, so a match in lane i has 48 - 16 * i leading zeros.
+            // Indexing values by 3 - countl_zero / 16 instead adds a sign extension and a null check.
+            if (matches)
+                return reinterpret_cast<const Value *>(
+                    reinterpret_cast<const std::byte *>(&group.values[3]) - static_cast<size_t>(std::countl_zero(matches)) / 2);
+#else
+            static_assert(Batch::size == 4);
+            const uint64_t matches = (Batch::load_aligned(group.keys) == needle).mask();
+            if (matches)
+                return &group.values[std::countr_zero(matches)];
+#endif
+            // Insertion fills the lowest empty lane and never deletes, so a group with a free slot has lane 3 empty.
+            if (group.keys[3] == 0)
+                return nullptr;
+            pos = (pos + 1) & group_mask;
+        }
+    }
+
     size_t size() const { return key_count; }
     size_t capacity() const { return groups.size() * 4; }
     size_t allocatedBytes() const { return groups.size() * sizeof(Group); }

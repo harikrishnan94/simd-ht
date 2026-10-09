@@ -121,6 +121,8 @@ int main(int argc, char ** argv)
     benchmark::RegisterBenchmark("ScalarOA", lookup<simd_ht::ScalarTable, &simd_ht::ScalarTable::find>)->Apply(arguments);
     benchmark::RegisterBenchmark("ScalarGroupedOA", lookup<simd_ht::GroupedTable, &simd_ht::GroupedTable::findScalar>)->Apply(arguments);
     benchmark::RegisterBenchmark("SIMDGroupedOA", lookup<simd_ht::GroupedTable, &simd_ht::GroupedTable::findSimd>)->Apply(arguments);
+    benchmark::RegisterBenchmark("SIMDCombinedGroupedOA", lookup<simd_ht::GroupedTable, &simd_ht::GroupedTable::findSimdCombined>)
+        ->Apply(arguments);
     benchmark::RegisterBenchmark("ScalarCyclicGroupedOA", lookup<simd_ht::CyclicGroupedTable, &simd_ht::CyclicGroupedTable::findScalar>)
         ->Apply(arguments);
     benchmark::RunSpecifiedBenchmarks();
