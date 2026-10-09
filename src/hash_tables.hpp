@@ -4,24 +4,20 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
+#include <new>
 #include <stdexcept>
 #include <vector>
 
-#include <xsimd/xsimd.hpp>
+#if !defined(SIMD_HT_AVX2) && !defined(SIMD_HT_NEON64)
+#error "Select the NEON64 or AVX2 SIMD backend in Meson."
+#endif
 
 namespace simd_ht
 {
 
 using Key = uint64_t;
 using Value = uint64_t;
-
-#if defined(SIMD_HT_AVX2)
-using LookupArch = xsimd::avx2;
-#elif defined(SIMD_HT_NEON64)
-using LookupArch = xsimd::neon64;
-#else
-#error "Select the NEON64 or AVX2 SIMD backend in Meson."
-#endif
 
 inline uint32_t hashKey(Key key)
 {
@@ -56,6 +52,22 @@ struct alignas(64) Group
 static_assert(sizeof(Cell) == 16);
 static_assert(sizeof(Group) == 64 && alignof(Group) == 64);
 static_assert(offsetof(Group, values) == 32);
+
+template <typename T>
+struct CacheLineAllocator
+{
+    using value_type = T;
+
+    T * allocate(size_t n)
+    {
+        void * p = nullptr;
+        if (posix_memalign(&p, 64, n * sizeof(T)) != 0)
+            throw std::bad_alloc();
+        return static_cast<T *>(p);
+    }
+    void deallocate(T * p, size_t) noexcept { std::free(p); }
+    bool operator==(const CacheLineAllocator &) const = default;
+};
 
 class ScalarTable
 {
@@ -110,7 +122,7 @@ public:
     size_t allocatedBytes() const { return cells.size() * sizeof(Cell); }
 
 private:
-    std::vector<Cell, xsimd::aligned_allocator<Cell, 64>> cells;
+    std::vector<Cell, CacheLineAllocator<Cell>> cells;
     size_t cell_mask;
     size_t key_count = 0;
 };
@@ -160,28 +172,36 @@ public:
     {
         if (key == 0)
             return nullptr;
-        using Batch = xsimd::batch<Key, LookupArch>;
-        const Batch needle(key);
+#if defined(SIMD_HT_NEON64)
+        using KeyPair = Key __attribute__((vector_size(16), aligned(16), may_alias));
+        using Words = uint32_t __attribute__((vector_size(16)));
+        using Fields = uint16_t __attribute__((vector_size(8)));
+        const KeyPair needle = {key, key};
+#else
+        using KeyQuad = Key __attribute__((vector_size(32), aligned(32), may_alias));
+        using LaneBits = bool __attribute__((ext_vector_type(4)));
+        const KeyQuad needle = {key, key, key, key};
+#endif
         const size_t group_mask = cell_mask >> 2;
         size_t pos = (hashKey(key) & cell_mask) >> 2;
         for (;;)
         {
             const auto & group = groups[pos];
 #if defined(SIMD_HT_NEON64)
-            static_assert(Batch::size == 2);
-            const uint64x2_t low = Batch::load_aligned(group.keys) == needle;
-            const uint64x2_t high = Batch::load_aligned(group.keys + 2) == needle;
+            const auto low = std::bit_cast<Words>(*reinterpret_cast<const KeyPair *>(group.keys) == needle);
+            const auto high = std::bit_cast<Words>(*reinterpret_cast<const KeyPair *>(group.keys + 2) == needle);
             // Lane i's comparison fills bits [16 * i, 16 * i + 16).
-            const uint16x4_t fields = vmovn_u32(vuzp1q_u32(vreinterpretq_u32_u64(low), vreinterpretq_u32_u64(high)));
-            const uint64_t matches = vget_lane_u64(vreinterpret_u64_u16(fields), 0);
+            const Words even = __builtin_shufflevector(low, high, 0, 2, 4, 6);
+            const uint64_t matches = std::bit_cast<uint64_t>(__builtin_convertvector(even, Fields));
             // A key occupies at most one slot, so a match in lane i has 48 - 16 * i leading zeros.
             // Indexing values by 3 - countl_zero / 16 instead adds a sign extension and a null check.
             if (matches)
                 return reinterpret_cast<const Value *>(
                     reinterpret_cast<const std::byte *>(&group.values[3]) - static_cast<size_t>(std::countl_zero(matches)) / 2);
 #else
-            static_assert(Batch::size == 4);
-            const uint64_t matches = (Batch::load_aligned(group.keys) == needle).mask();
+            const auto equal = __builtin_convertvector(*reinterpret_cast<const KeyQuad *>(group.keys) == needle, LaneBits);
+            // Bits 4 to 7 of a four-lane bool vector are padding, so std::bit_cast to a byte would read them.
+            const unsigned matches = unsigned{equal[0]} | unsigned{equal[1]} << 1 | unsigned{equal[2]} << 2 | unsigned{equal[3]} << 3;
             if (matches)
                 return &group.values[std::countr_zero(matches)];
 #endif

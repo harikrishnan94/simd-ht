@@ -14,6 +14,10 @@ differences. This page holds the complete numbers and the method.
 | Harness | Google Benchmark 1.9.4, one thread pinned to CPU 8 |
 | Binary | One `oa_bench` build, copied unchanged to all four instances |
 
+The measured binary used xsimd 14.3.0 for the NEON compares. The current source uses Clang's vector
+types instead. Clang 22.1.8 compiles the benchmark's three lookup functions to the same instructions
+from the xsimd source and from the current source.
+
 The cases were split across the instances by table row, so the three lookups in any row ran on the
 same machine:
 
@@ -224,8 +228,8 @@ compared with the tables above. The full log is in the git history of this file.
   linear probing cost 0.42 ns, and three cost 2.03 ns.
 - Two SIMD variants that were slower: indexing the values with `3 - countl_zero / 16` cost 33
   instructions per hit, because Clang added a sign extension and kept a null check. Computing the
-  value offset with xsimd `select` and `reduce_add` needed two 128-bit constants. AArch64 calls do not preserve
-  128-bit vector registers, so the constants were reloaded from the stack on every probe.
+  value offset with xsimd `select` and `reduce_add` needed two 128-bit constants. AArch64 calls do
+  not preserve 128-bit vector registers, so the constants were reloaded from the stack on every probe.
 
 ## Reproduce
 

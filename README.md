@@ -180,13 +180,15 @@ mispredicts a tenth as often. Both need about 43 cycles per hit.
 - Throughput of independent lookups on one thread. The results are not the latency of one isolated
   lookup.
 - Insert-only tables. The lane 3 test and the cyclic early exit both rely on there being no deletion.
-- The AVX2 code compiles, but it has not been run.
+- No x86-64 results. The AVX2 build compiles, but it has not been run. The tests run its lookup code
+  only as compiled for AArch64.
 
 ## Build and test
 
 The build needs Clang with C++20, Meson, Ninja, CMake, clang-format, and clang-tidy. The scripts in
 `tools/` need only Python 3. The build was tested with Clang 22.1.8. On first setup, Meson downloads
-Google Benchmark and xsimd as pinned archives and checks their hashes.
+Google Benchmark as a pinned archive and checks its hash. The SIMD lookup uses Clang's vector types
+and needs no SIMD library.
 
 ```sh
 CXX=clang++-22 meson setup build --buildtype=release
@@ -208,7 +210,9 @@ meson test -C build-sanitize --print-errorlogs
 ```
 
 The tests check every lookup against a reference map. They cover collisions, full groups,
-wraparound, high key bits, duplicate updates, sizing limits, and empty tables.
+wraparound, high key bits, duplicate updates, sizing limits, and empty tables. A second test binary
+runs the same checks on the other backend's SIMD lookup, compiled for the host CPU. This works
+because both backends use only Clang's vector types.
 
 ## Measurement
 
