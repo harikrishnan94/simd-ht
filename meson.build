@@ -61,11 +61,14 @@ table_dep = declare_dependency(
 
 benchmark_source = files('src/benchmark.cpp')
 test_source = files('tests/hash_tables_test.cpp')
-project_sources = benchmark_source + test_source + files('src/hash_tables.hpp', 'src/workload.hpp')
+probe_stats_source = files('tools/probe_stats.cpp')
+project_sources = benchmark_source + test_source + probe_stats_source + files('src/hash_tables.hpp', 'src/perf_counters.hpp', 'src/workload.hpp')
 
 oa_bench = executable('oa_bench', benchmark_source, dependencies: [table_dep, benchmark_dep])
 oa_tests = executable('oa_tests', test_source, dependencies: table_dep)
+oa_probe_stats = executable('oa_probe_stats', probe_stats_source, dependencies: table_dep)
 test('hash_tables', oa_tests, timeout: 120)
+test('probe_stats_placement', oa_probe_stats, args: ['--verify', '16'], timeout: 120)
 test('benchmark_smoke', oa_bench,
   args: ['--benchmark_filter=.*keys:1024/', '--benchmark_min_time=0.001s', '--benchmark_repetitions=1'],
   timeout: 120,
@@ -75,7 +78,7 @@ clang_format = find_program('clang-format-22', 'clang-format-21', 'clang-format-
 clang_tidy = find_program('clang-tidy-22', 'clang-tidy-21', 'clang-tidy-20', 'clang-tidy-19', 'clang-tidy')
 run_target('format', command: [clang_format, '-i'] + project_sources)
 run_target('format-check', command: [clang_format, '--dry-run', '--Werror'] + project_sources)
-run_target('tidy', command: [clang_tidy, '-p', meson.project_build_root(), '--quiet'] + benchmark_source + test_source)
+run_target('tidy', command: [clang_tidy, '-p', meson.project_build_root(), '--quiet'] + benchmark_source + test_source + probe_stats_source)
 
 summary({
   'SIMD backend': simd,

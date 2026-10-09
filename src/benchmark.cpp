@@ -1,4 +1,5 @@
 #include "hash_tables.hpp"
+#include "perf_counters.hpp"
 #include "workload.hpp"
 
 #include <benchmark/benchmark.h>
@@ -44,6 +45,7 @@ void lookup(benchmark::State & state)
         uint64_t total_hits = 0;
         uint64_t total_checksum = 0;
         const auto * query_data = workload.queries.data();
+        PerfCounters counters;
         benchmark::DoNotOptimize(table);
         benchmark::DoNotOptimize(query_data);
         // Each batch scans the full trace; benchmark iterations count individual lookups.
@@ -52,6 +54,7 @@ void lookup(benchmark::State & state)
             benchmark::ClobberMemory();
             uint64_t hits = 0;
             uint64_t checksum = 0;
+            counters.start();
             for (Key key : workload.queries)
             {
                 if (const Value * value = (table.*Find)(key))
@@ -60,6 +63,7 @@ void lookup(benchmark::State & state)
                     checksum += *value;
                 }
             }
+            counters.stop();
             total_hits += hits;
             total_checksum += checksum;
             ++batches;
@@ -77,6 +81,7 @@ void lookup(benchmark::State & state)
         }
 
         state.SetItemsProcessed(state.iterations());
+        counters.report(state);
         state.counters["capacity"] = static_cast<double>(table.capacity());
         state.counters["load_factor"] = static_cast<double>(table.size()) / static_cast<double>(table.capacity());
         state.counters["table_bytes"] = static_cast<double>(table.allocatedBytes());
@@ -84,7 +89,7 @@ void lookup(benchmark::State & state)
     }
     catch (const std::exception & exception)
     {
-        fail(state, std::string("Table or workload setup failed: ") + exception.what());
+        fail(state, std::string("Benchmark setup or perf counters failed: ") + exception.what());
     }
 }
 
