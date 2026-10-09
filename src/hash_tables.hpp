@@ -172,7 +172,7 @@ public:
     {
         if (key == 0)
             return nullptr;
-        // Insertion fills the lowest empty lane and never deletes, so a group with a free slot has lane 3 empty.
+        // Insertion fills the lowest empty lane and never deletes, so a lookup stops at the first group with lane 3 empty.
 #if defined(SIMD_HT_NEON64)
         using KeyPair = Key __attribute__((vector_size(16), aligned(16), may_alias));
         using Words = uint32_t __attribute__((vector_size(16)));
@@ -210,7 +210,7 @@ public:
         {
             const auto & group = *reinterpret_cast<const Group *>(base + offset);
             const auto equal = __builtin_convertvector(*reinterpret_cast<const KeyQuad *>(group.keys) == needle, LaneBits);
-            // Bits 4 to 7 of a four-lane bool vector are padding, so std::bit_cast to a byte would read them.
+            // Bits 4 to 7 of a four-lane bool vector are padding, so std::bit_cast to a byte gives an indeterminate value.
             const unsigned matches = unsigned{equal[0]} | unsigned{equal[1]} << 1 | unsigned{equal[2]} << 2 | unsigned{equal[3]} << 3;
             if (matches)
                 return &group.values[std::countr_zero(matches)];
