@@ -62,14 +62,14 @@ project_sources = benchmark_source + test_source + probe_stats_source + files('s
 oa_bench = executable('oa_bench', benchmark_source, dependencies: [table_dep, benchmark_dep])
 oa_tests = executable('oa_tests', test_source, dependencies: table_dep)
 oa_probe_stats = executable('oa_probe_stats', probe_stats_source, dependencies: table_dep)
-test('hash_tables', oa_tests, timeout: 120)
+test('hash_tables', oa_tests, timeout: 30)
 # The lookups use only Clang vector types, so the other backend's source also builds for this CPU.
 other_table_dep = declare_dependency(
   include_directories: include_directories('src'),
   compile_args: no_autovec_args + ['-DSIMD_HT_@0@=1'.format(other_simd.to_upper())],
 )
 oa_tests_other = executable('oa_tests_' + other_simd, test_source, dependencies: other_table_dep)
-test('hash_tables_' + other_simd + '_source', oa_tests_other, timeout: 120)
+test('hash_tables_' + other_simd + '_source', oa_tests_other, timeout: 30)
 test('probe_stats_placement', oa_probe_stats, args: ['--verify', '16'], timeout: 120)
 test('benchmark_smoke', oa_bench,
   args: ['--benchmark_filter=.*keys:1024/', '--benchmark_min_time=0.001s', '--benchmark_repetitions=1'],

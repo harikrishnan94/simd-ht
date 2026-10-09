@@ -216,7 +216,9 @@ meson test -C build-sanitize --print-errorlogs
 The tests check every lookup against a reference map. They cover collisions, full groups,
 wraparound, high key bits, duplicate updates, sizing limits, and empty tables. A second test binary
 runs the same checks on the other backend's SIMD lookup, compiled for the host CPU. This works
-because both backends use only Clang's vector types.
+because both backends use only Clang's vector types. Run `OA_LARGE_TESTS=1 meson test -C build` to
+also check an 8 GiB grouped table, the smallest one whose group index uses hash bit 28. Each test
+binary builds its own table, so this needs 16 GiB of memory.
 
 ## Measurement
 

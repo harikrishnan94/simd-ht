@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <limits>
@@ -105,6 +106,19 @@ void testSizing()
     expectThrows<std::length_error>([] { simd_ht::capacityFor((std::size_t{1} << 31) + 1); }, "Oversized key count was accepted");
     expectThrows<std::length_error>(
         [] { simd_ht::capacityFor(std::numeric_limits<std::size_t>::max()); }, "Overflowing key count was accepted");
+}
+
+void testScalarAlignment()
+{
+    for (std::size_t count : {1, 16, 1000, 100000})
+    {
+        ScalarTable table(count);
+        table.insert(1, 1);
+        const std::size_t home = simd_ht::hashKey(1) & (table.capacity() - 1);
+        const auto value = reinterpret_cast<std::uintptr_t>(table.find(1));
+        const std::uintptr_t cells = value - home * sizeof(simd_ht::Cell) - offsetof(simd_ht::Cell, value);
+        require(cells % 64 == 0, "Scalar cells do not start on a cache line");
+    }
 }
 
 void testSpecialKeys()
@@ -280,6 +294,27 @@ void testCyclicPlacement()
     }
 }
 
+// The table takes 8 GiB, so main runs this only when OA_LARGE_TESTS is set.
+void testLargeGroupedTable()
+{
+    // With 2^27 groups, the home group of these keys depends on hash bit 28.
+    GroupedTable table(std::size_t{1} << 28);
+    std::vector<Key> keys;
+    for (Key key = 1; keys.size() < 2000; ++key)
+    {
+        if (simd_ht::hashKey(key) & (1U << 28))
+            keys.push_back(key);
+    }
+    for (std::size_t i = 0; i < 1000; ++i)
+        table.insert(keys[i], i);
+    for (std::size_t i = 0; i < 1000; ++i)
+    {
+        const Value * found = table.findSimd(keys[i]);
+        require(found && *found == i, "SIMD grouped lookup failed in a table of 2^27 groups");
+        require(table.findSimd(keys[1000 + i]) == nullptr, "SIMD grouped lookup returned an absent key in a table of 2^27 groups");
+    }
+}
+
 void testRandomReference()
 {
     // A fixed seed makes test failures reproducible.
@@ -390,6 +425,7 @@ int main()
     try
     {
         testSizing();
+        testScalarAlignment();
         testSpecialKeys();
         testInsertionLimit();
         testWraparound();
@@ -397,6 +433,10 @@ int main()
         testCyclicPlacement();
         testRandomReference();
         testWorkloads();
+        // The tests run on one thread, and nothing modifies the environment.
+        const char * large = std::getenv("OA_LARGE_TESTS"); // NOLINT(concurrency-mt-unsafe)
+        if (large && *large)
+            testLargeGroupedTable();
         std::cout << "Hash table tests passed\n";
         return 0;
     }
