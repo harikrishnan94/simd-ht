@@ -1,0 +1,7 @@
+/build*/
+/results/
+/subprojects/benchmark-*/
+/subprojects/xsimd-*/
+/subprojects/packagecache/
+/subprojects/.wraplock
+/compile_commands.json

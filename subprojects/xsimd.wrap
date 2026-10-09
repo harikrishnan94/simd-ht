@@ -1,0 +1,5 @@
+[wrap-file]
+directory = xsimd-14.3.0
+source_url = https://codeload.github.com/xtensor-stack/xsimd/tar.gz/refs/tags/14.3.0
+source_filename = xsimd-14.3.0.tar.gz
+source_hash = b3d50e7a73fbf4642ceef30131c93414901d69eee41c2a5302db650b03e2c792

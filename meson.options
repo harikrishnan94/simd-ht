@@ -1,0 +1,1 @@
+option('simd', type: 'combo', choices: ['auto', 'neon64', 'avx2'], value: 'auto', description: 'SIMD backend for the target CPU')
