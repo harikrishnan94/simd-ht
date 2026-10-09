@@ -127,6 +127,44 @@ private:
     size_t key_count = 0;
 };
 
+/// Puts the key in the first group, from its home group on, that holds the key or has an empty lane.
+/// Each group's lanes are scanned from lane hash & lane_mask, wrapping around.
+inline void insertIntoGroups(std::vector<Group> & groups, size_t & key_count, Key key, Value value, uint32_t lane_mask)
+{
+    if (key == 0)
+        throw std::invalid_argument("Key zero is reserved for empty cells");
+    const uint32_t hash = hashKey(key);
+    const size_t first_lane = hash & lane_mask;
+    const size_t group_mask = groups.size() - 1;
+    size_t pos = (hash >> 2) & group_mask;
+    for (;;)
+    {
+        auto & group = groups[pos];
+        size_t empty_lane = 4;
+        for (size_t offset = 0; offset < 4; ++offset)
+        {
+            const size_t lane = (first_lane + offset) & 3;
+            if (group.keys[lane] == key)
+            {
+                group.values[lane] = value;
+                return;
+            }
+            if (group.keys[lane] == 0 && empty_lane == 4)
+                empty_lane = lane;
+        }
+        if (empty_lane != 4)
+        {
+            if (key_count == groups.size() * 2)
+                throw std::length_error("Table reached its maximum load factor");
+            group.keys[empty_lane] = key;
+            group.values[empty_lane] = value;
+            ++key_count;
+            return;
+        }
+        pos = (pos + 1) & group_mask;
+    }
+}
+
 class GroupedTable
 {
 public:
@@ -136,37 +174,7 @@ public:
     {
     }
 
-    void insert(Key key, Value value)
-    {
-        if (key == 0)
-            throw std::invalid_argument("Key zero is reserved for empty cells");
-        size_t pos = (hashKey(key) & cell_mask) >> 2;
-        for (;;)
-        {
-            auto & group = groups[pos];
-            size_t empty_lane = 4;
-            for (size_t lane = 0; lane < 4; ++lane)
-            {
-                if (group.keys[lane] == key)
-                {
-                    group.values[lane] = value;
-                    return;
-                }
-                if (group.keys[lane] == 0 && empty_lane == 4)
-                    empty_lane = lane;
-            }
-            if (empty_lane != 4)
-            {
-                if (key_count == capacity() / 2)
-                    throw std::length_error("Table reached its maximum load factor");
-                group.keys[empty_lane] = key;
-                group.values[empty_lane] = value;
-                ++key_count;
-                return;
-            }
-            pos = (pos + 1) & (cell_mask >> 2);
-        }
-    }
+    void insert(Key key, Value value) { insertIntoGroups(groups, key_count, key, value, 0); }
 
     const Value * findSimd(Key key) const
     {
@@ -240,40 +248,7 @@ public:
     {
     }
 
-    void insert(Key key, Value value)
-    {
-        if (key == 0)
-            throw std::invalid_argument("Key zero is reserved for empty cells");
-        const uint32_t hash = hashKey(key);
-        const size_t home_lane = hash & 3;
-        size_t pos = hash & cell_mask & ~size_t{3};
-        for (;;)
-        {
-            auto & group = groups[pos / 4];
-            size_t empty_lane = 4;
-            for (size_t offset = 0; offset < 4; ++offset)
-            {
-                const size_t lane = (home_lane + offset) & 3;
-                if (group.keys[lane] == key)
-                {
-                    group.values[lane] = value;
-                    return;
-                }
-                if (group.keys[lane] == 0 && empty_lane == 4)
-                    empty_lane = lane;
-            }
-            if (empty_lane != 4)
-            {
-                if (key_count == capacity() / 2)
-                    throw std::length_error("Table reached its maximum load factor");
-                group.keys[empty_lane] = key;
-                group.values[empty_lane] = value;
-                ++key_count;
-                return;
-            }
-            pos = (pos + 4) & cell_mask;
-        }
-    }
+    void insert(Key key, Value value) { insertIntoGroups(groups, key_count, key, value, 3); }
 
     const Value * findScalar(Key key) const
     {
