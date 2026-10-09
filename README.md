@@ -1,102 +1,99 @@
 # simd-ht
 
-This repository measures three lookups for an open-addressing hash table with 64-bit keys. It runs
-them on one Arm Neoverse V2 core, for tables from 32 KiB to 8 GiB at load factor 0.5.
+This page reports timed lookups on three hash tables. Each key and each value is a 64-bit integer.
 
-In an 8 GiB table, the SIMD grouped lookup takes 14.57 ns per miss and 15.30 ns per hit. Linear
-probing takes 36.53 ns and 15.74 ns. Most SIMD lookups read one cache line. Per miss, the SIMD
-lookup mispredicts 0.29 times and runs 28.97 instructions, against 1.42 and 28.50 for linear
-probing. From 2 MiB to 8 GiB it has the lowest median time in every measured case.
+The key is stored in the table, next to its value. A separate list of keys for one slot is called a bucket. This table has no buckets. This layout is called open addressing.
 
-| Lookup | Benchmark | Layout | Scan |
-| --- | --- | --- | --- |
-| Linear probing | `ScalarOA` | 16-byte key/value cells | One cell at a time, from the home cell |
-| Cyclic scalar | `ScalarCyclicGroupedOA` | 64-byte groups of four keys | One lane at a time, from lane `hash & 3` |
-| SIMD | `SIMDGroupedOA` | 64-byte groups of four keys | All four lanes with two NEON compares |
+The runs used one core of the Arm Neoverse V2 design. Graviton4 is the name of that core in these runs.
 
-![Lookup time against table size for the three lookups](docs/lookup-time.svg)
+Each table is half full. The share of filled slots is the load factor. Here the load factor is 0.5.
 
-Median nanoseconds per lookup in an 8 GiB table (2^28 keys):
+A KiB is 1,024 bytes. A MiB is 1,024 KiB. A GiB is 1,024 MiB. The smallest table is 32 KiB. The largest table is 8 GiB.
 
-| Lookup | All misses | Half hits | All hits |
+Three lookups are measured. The name in parentheses is the benchmark name.
+
+- The table is a row of 16-byte cells. A cell holds one key and one value. The lookup starts at the cell the hash selects. It then tries each next cell. It stops when it finds the key or an empty cell. This is linear probing (`ScalarOA`).
+
+- Keys and values sit in groups of 64 bytes. A group holds 4 keys, then 4 values. Each of those 4 positions is a lane, numbered 0 to 3. The scan starts at lane `hash & 3`. After the scan checks lane 3, it checks lane 0 next, in the same group. This is the cyclic grouped scan (`ScalarCyclicGroupedOA`).
+
+SIMD means one instruction works on several keys at once. On this core those instructions are called NEON.
+
+- The group has the same 64-byte shape. Insertion fills the lowest free lane. One branch then tests whether any of the 4 keys matched. This is the SIMD grouped lookup (`SIMDGroupedOA`).
+
+## Results
+
+These times are for the hash table of 8 GiB. That hash table holds 2^28 keys. The unit is nanoseconds per lookup. Each number is the median of 5 runs.
+
+A hit means the key is in the table. A miss means the key is absent. The middle column is half hits and half misses.
+
+| | All misses | 50% hits | All hits |
 | --- | ---: | ---: | ---: |
-| Linear probing | 36.53 | 40.82 | 15.74 |
-| Cyclic scalar | 26.87 | 26.39 | 16.08 |
-| SIMD | 14.57 | 19.36 | 15.30 |
+| Linear probing (`ScalarOA`) | 36.53 | 40.82 | 15.74 |
+| Cyclic grouped scan (`ScalarCyclicGroupedOA`) | 26.87 | 26.39 | 16.08 |
+| SIMD grouped lookup (`SIMDGroupedOA`) | 14.57 | 19.36 | 15.30 |
 
-[RESULTS.md](RESULTS.md) has the results for all ten table sizes, the hardware counters, the probe
-statistics, and the method.
+![Lookup time vs table size](docs/lookup-time.svg)
 
-## Table design
+The chart shows the same three lookups at every table size.
 
-Keys and values are 64-bit integers, and key 0 marks an empty slot. The capacity is twice the key
-count, rounded up to a power of two, so every benchmark runs at load factor 0.5. The table never
-deletes or resizes. The hash XORs the two 32-bit halves of a key and then applies MurmurHash3's
-`fmix32` finalizer.
+From 2 MiB up, the SIMD lookup is 2.1-2.8x faster than linear probing on misses. With 50% hits, it is 1.4-2.1x faster. When every lookup hits, SIMD is only 2-3% faster than linear probing from 128 MiB up.
 
-The lookups use two memory layouts:
+A cache line is the 64-byte block the CPU loads from memory. Every hit reads about one cache line, in all three layouts. The all-hit times stay close for that reason.
 
-```text
-Linear probing: 16-byte cells, four per 64-byte cache line
-  | key | value | key | value | key | value | key | value |
-  start at cell  hash & (capacity - 1),  then try the next cell
+[RESULTS.md](RESULTS.md) lists every table size. It records how many instructions the CPU ran. A cycle is one tick of the core's clock. It also records how many cycles those instructions took.
 
-Grouped: one 64-byte group per cache line
-  | key 0 | key 1 | key 2 | key 3 | value 0 | value 1 | value 2 | value 3 |
-  start at group (hash & (capacity - 1)) / 4,  then try the next group
-```
+It also records how often the CPU guessed a branch wrong. Those records are the hardware counters. It also counts the keys each lookup compares. It counts the cache lines each lookup reads.
 
-The cell or group where a lookup starts is the key's home. Both layouts use 16 bytes per slot, so
-the same hash bits pick the same cache line in either layout.
+Those key and line counts are the probe statistics. That page also describes two earlier designs. One compares the lanes from lane 0, one key at a time. A mask is a few bits that record which lanes matched. The other design builds one bit of that mask per lane. The page records how the numbers were checked.
 
-A group's four slots are lanes 0 to 3. Insertion puts a key in the first empty lane of its home
-group, or of the next group when the home group is full. The two grouped tables fill lanes in a
-different order. The SIMD table fills lanes 0, 1, 2, 3. The cyclic table starts at lane `hash & 3`
-and wraps around.
+## Why the SIMD lookup is faster on misses
 
-## Analysis
+At load factor 0.5, a linear-probing miss compares 2.5 keys on average. The count varies a lot. 50% of misses stop at the first cell. 13.6% of misses need 5 or more cells.
 
-### Linear probing
+The loop stops on the key or on an empty cell. The CPU often guesses wrong about when the loop will stop. A wrong guess is a branch misprediction. At 8 GiB, each miss has 1.42 branch mispredictions.
 
-At load factor 0.5, linear probing compares 1.5 keys per hit and 2.5 keys per miss on average. This
-is Knuth's result. `tools/probe_stats.cpp` measures 1.50 and 2.50 on the benchmark's keys. The
-averages hide two costs.
+My first SIMD version removed most of those mispredictions. It had 0.25 mispredictions per miss. It was still slower than the cyclic grouped scan. That scan checks one key at a time.
 
-The number of compares varies from miss to miss:
+A mask is a few bits that record which lanes matched. That version built a 4-bit mask from the compare results. Building it took 8 instructions per group. The lookup built a second mask to find an empty lane.
 
-| Linear-probing misses that stop at | 1st cell | 2nd | 3rd | 4th | 5th or later |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| Share | 50.0% | 19.7% | 10.5% | 6.3% | 13.6% |
+On an average miss, the current version runs 29 instructions. The first version runs 45. The table below shows the same counts as 28.97 and 45.17. The misprediction rate is about the same.
 
-The core therefore cannot predict the branch that ends the loop. The hardware counters show 1.42
-branch mispredictions per miss. Each misprediction discards the work the core had already started on
-the lookups after it.
+Branch misses in this table are mispredicted branches. Each column is per lookup.
 
-A run of occupied cells also crosses into the next cache line. A miss reads 1.375 lines on average,
-and 28% of misses read two lines or more.
+| 8 GiB, all misses, per lookup | Branch misses | Instructions | Cycles | ns |
+| --- | ---: | ---: | ---: | ---: |
+| Linear probing (`ScalarOA`) | 1.42 | 28.50 | 100.6 | 36.53 |
+| Cyclic grouped scan (`ScalarCyclicGroupedOA`) | 1.30 | 34.15 | 75.0 | 26.87 |
+| First SIMD version, one mask per lane | 0.25 | 45.17 | 79.5 | 28.46 |
+| SIMD grouped lookup (`SIMDGroupedOA`) | 0.29 | 28.97 | 40.5 | 14.57 |
 
-### Grouped layout
+My reading is that the lookups do not depend on each other. One lookup can be waiting on memory while the core starts later instructions. The core may start only a limited number of those instructions. That limit is the out-of-order window.
 
-At load factor 0.5, 16.3% of groups are full. A miss stops at the first group with a free slot, so
-83.7% of misses end in their home cache line. A hit reads 1.05 lines on average, against 1.125 for
-linear probing.
+A cache miss is a load that does not find its data in the cache. Fewer instructions per lookup let more lookups fit in that window. More cache misses can then be waiting at once. A cache miss that has started, and has not finished, is a miss in flight.
 
-### Cyclic scalar lookup
+Adding 3 unused `and` instructions to linear probing cost 12.8% at 8 GiB, with all hits. That fits this reading. I have not measured the number of misses in flight.
 
-`ScalarCyclicGroupedOA` starts both insertion and lookup at lane `hash & 3` and wraps around the
-group. Its first compare finds 75% of hits, the same share as linear probing. A hit compares 1.52
-keys on average, and each probe reads one cache line. The lookup stops at the first empty lane,
-because insertion filled the lanes in the same order and nothing is deleted.
+## How the SIMD probe works
 
-An earlier scalar lookup scanned lanes 0 to 3 of the SIMD table. A key sits in whichever lane was
-free when it was inserted. So that scan found only 43% of hits with its first compare, and it
-compared 2.10 keys per hit. In the 8 GiB table it took 20.51 ns per hit, against 16.08 ns for the
-cyclic scan. [RESULTS.md](RESULTS.md#earlier-designs) lists its other numbers.
+The table never deletes a key. A table that only inserts is called insert-only. A key sits in at most one slot.
 
-### SIMD lookup
+1) At most one lane can match. The lookup does not need a separate mask bit for each lane.
 
-`SIMDGroupedOA` compares all four keys of a group at once. Clang 22 generates this NEON code for one
-group:
+The first instruction compares keys 0 and 1. The second compares keys 2 and 3. Both write their results into one register. Each key uses 16 bits of that register.
+
+`cbnz` branches when that register is not zero. One `cbnz` then tests all 4 keys.
+
+Leading zeros are the zero bits before the first 1 bit. A match in lane 0 leaves 48 leading zeros. Each later lane leaves 16 fewer than the lane before it. For lane `i`, the code writes the count as `48 - 16 * i`.
+
+The values sit in order, from value 0 through value 3. Each value occupies 8 bytes. The compare result uses 16 bits per key. Two leading zeros make one byte of distance. The code divides the whole count by 2.
+
+The load starts at value 3. It moves back by that byte count. It arrives at value `i`.
+
+2) Insertion fills the lowest free lane. The lanes therefore fill from lane 0 toward lane 3. If any lane is free, lane 3 is free as well. `keys[3]` is then 0.
+
+A miss does one extra load of that key. That load reads a single key. 83.7% of groups are not full. The branch on `keys[3]` nearly always goes the same way.
+
+The compiler is Clang. Version 22 generates these instructions for one group. In the listing, a general register is a normal integer register. `uzp1` keeps one 32-bit half of each compare result. `xtn` narrows that half to 16 bits.
 
 ```asm
 ldp   q1, q2, [x15]          // load keys 0-1 and keys 2-3
@@ -108,174 +105,64 @@ fmov  x14, d1                // move the four fields to one general register
 cbnz  x14, hit               // one branch for four keys
 ```
 
-Two properties of the table keep the rest short:
+The home group is the first group the hash selects. A hit that stops there is 29 instructions in the compiled code. A miss that stops there is 26 instructions in the compiled code. Both counts include the hash and the benchmark loop.
 
-1. A key occupies at most one slot. At most one 16-bit field is set, so one count of leading zeros
-   finds the match. A match in lane `i` leaves `48 - 16 * i` leading zeros. Half of that count is the
-   distance in bytes from `values[3]` back to `values[i]`. A hit loads its value with `clz`, `sub`,
-   and `ldr`, plus one `add` that recomputes the group address.
-2. The filled lanes always come first. Insertion takes the lowest empty lane, and nothing is
-   deleted, so a group with any free slot has an empty lane 3. When no key matches, one scalar load
-   of `keys[3]` decides whether the key is absent. That branch goes the same way in the 83.7% of
-   groups that are not full.
+These path counts are not the averages in the table above. Some lookups search past the home group. Those lookups run more instructions.
 
-A hit in the home group runs 29 instructions, counting the hash and the benchmark loop. A miss that
-ends in the home group runs 26.
+The code is in [`src/hash_tables.hpp`](src/hash_tables.hpp). A vector type holds several keys in one variable. The code uses only vector types that are built into Clang. It does not use a separate SIMD library.
 
-An earlier SIMD lookup made the same two compares. It then moved each 64-bit result to a general
-register and rebuilt a 4-bit mask, which took eight instructions before the branch. It repeated that
-work to look for an empty lane. A hit cost 34 instructions, and a miss in the home group cost 39. In
-the 8 GiB table it took 22.69 ns per hit and 28.46 ns per miss.
+x86-64 is the 64-bit instruction set for Intel and AMD processors. On x86-64, one instruction compares the keys in the group. Its name is `vpcmpeqq`. A second instruction moves that result into a normal integer register. Its name is `vmovmskpd`.
 
-On x86-64, the AVX2 loop compares a group with one 256-bit `vpcmpeqq` and moves the result to a
-general register with one `vmovmskpd`. It has the same lane 3 test. It keeps the probe position as
-a byte offset, because x86 addressing cannot scale a group index by 64. The NEON loop keeps the
-group index, which AArch64 scales inside `add ..., lsl #6`. In the x86-64 disassembly, each further
-group costs 9 instructions with the byte offset, against 13 with a group index. The AVX2 build has
-not been run on x86-64, so its effect on lookup time is unmeasured.
+## Sapphire Rapids
 
-### Hardware counters
+A second run used one logical CPU of an Intel Xeon Platinum 8488C. That chip is Sapphire Rapids. The machines were eight AWS `m7i.4xlarge` instances in `ap-south-2a`. The date was 2026-10-09. The SIMD instructions on this CPU are AVX2.
 
-Counts per lookup in the 8 GiB table:
+The same three lookups ran again. The table below is the 8 GiB hash table, in nanoseconds per lookup. Each number is the median of 5 runs.
 
-| Lookup | Miss: instructions | Miss: cycles | Miss: branch misses | Hit: instructions | Hit: cycles | Hit: branch misses |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Linear probing | 28.50 | 100.6 | 1.42 | 24.75 | 43.7 | 0.57 |
-| Cyclic scalar | 34.15 | 75.0 | 1.30 | 27.34 | 45.0 | 0.53 |
-| SIMD | 28.97 | 40.5 | 0.29 | 29.69 | 43.1 | 0.05 |
+| | All misses | 50% hits | All hits |
+| --- | ---: | ---: | ---: |
+| Linear probing (`ScalarOA`) | 61.46 | 83.53 | 30.82 |
+| Cyclic grouped scan (`ScalarCyclicGroupedOA`) | 58.54 | 67.98 | 29.39 |
+| SIMD grouped lookup (`SIMDGroupedOA`) | 28.55 | 34.68 | 23.50 |
 
-The cyclic scalar and SIMD lookups read the same cache lines, because their tables hold the same
-number of keys in each group. On a miss, the cyclic lookup mispredicts 1.30 times against 0.29. It
-runs 34.15 instructions against 28.97, and it needs 75.0 cycles against 40.5.
+From 2 MiB up, the SIMD lookup is 2.1-2.8x faster than linear probing on misses. With 50% hits, it is 1.4-2.4x faster. With every lookup hitting, it is 1.2-1.8x faster.
 
-The earlier SIMD lookup read the same lines and mispredicted about as often: 0.25 times per miss,
-against 0.29. It ran 45.17 instructions and 79.5 cycles per miss. The current lookup runs 36% fewer
-instructions per miss and needs 49% fewer cycles.
+At 32 KiB and at 128 KiB, with every lookup hitting, linear probing is faster.
 
-Interpretation: while one lookup waits for memory, the core starts the following lookups, up to a
-fixed number of instructions ahead. Fewer instructions per lookup let more lookups start, so more
-cache misses overlap. A misprediction discards the lookups started after it. The counters are
-consistent with this model, but they do not prove it.
+[RESULTS.md](RESULTS.md#x86-64) lists every table size for this run, plus the hardware counters.
 
-On hits, the SIMD lookup runs 20% more instructions than linear probing (29.69 against 24.75), and it
-mispredicts a tenth as often. Both need about 43 cycles per hit.
+## Caveats
 
-### Results by table size
+- The tables in [Results](#results) come from Graviton4. The compiler is Clang 22.1.8. The keys follow one distribution. The load factor is 0.5. The Sapphire Rapids times are in the section above.
 
-- 32 KiB and 128 KiB. The query trace holds only 1,024 or 4,096 keys and repeats on every pass, and
-  the branch predictor learns it. At these sizes, linear probing mispredicts 0.001 to 0.003 times per
-  miss, against 1.0 at 512 KiB. Without mispredictions and cache misses, the instruction count
-  decides. Linear probing has the lowest time for hits (1.58 ns against 1.99 ns at 32 KiB) and for
-  half hits. The SIMD lookup has the lowest time for misses (1.61 ns against 1.91 ns). These two
-  sizes are a best case for linear probing.
-- 512 KiB. The trace is too long to learn. Linear-probing misses take 11.17 ns, and SIMD misses take
-  2.25 ns. With all hits, the three lookups are within run-to-run noise, between 2.41 and 2.48 ns.
-- 2 MiB to 8 GiB. The SIMD lookup has the lowest median in every row. Its range of runs is separate
-  from the other two ranges, except with all hits at 32 MiB. Against linear probing it is 2.1 to 2.8
-  times faster on misses, and 1.4 to 2.1 times faster with half hits. With all hits, the difference
-  falls from 1.7 times at 2 MiB to 2 to 3% at 128 MiB and above.
+- The benchmark times a stream of lookups that do not depend on each other. That rate is throughput. It does not time one lookup running alone. That single wait is latency.
 
-## Limitations
+- Below 2 MiB, the results are mixed.
 
-- One processor: Arm Neoverse V2 (AWS Graviton4), on four `m8g.4xlarge` instances, with Clang 22.1.8
-  on Linux. Each core has 64 KiB of L1 data cache and 2 MiB of L2. The 36 MiB L3 is shared.
-- One input distribution: distinct pseudo-random 64-bit keys, one fixed shuffle seed, and a load
-  factor of exactly 0.5.
-- Throughput of independent lookups on one thread. The results are not the latency of one isolated
-  lookup.
-- Insert-only tables. The lane 3 test and the cyclic early exit both rely on there being no deletion.
-- No x86-64 results. The AVX2 build compiles, but it has not been run. The tests run its lookup code
-  only as compiled for AArch64.
+- The branch predictor is the part of the core that guesses which way a branch will go. The query trace is the list of keys to look up. At 32 KiB and at 128 KiB, that predictor learns the list. Linear probing is then faster on hits.
 
-## Build and test
+- At 512 KiB, the time depends on where the loop sits in memory. Two builds use the same loop instructions. On misses, linear probing differs by 39% between those builds.
 
-The build needs Clang with C++20, Meson, Ninja, CMake, clang-format, and clang-tidy. The scripts in
-`tools/` need only Python 3. The build was tested with Clang 22.1.8. On first setup, Meson downloads
-Google Benchmark as a pinned archive and checks its hash. The SIMD lookup uses Clang's vector types
-and needs no SIMD library.
+- The table is insert-only. The `keys[3]` test does not work if a key can be deleted.
+
+- The x86-64 SIMD path is AVX2. It was run on eight `m7i.4xlarge` instances. The times are in [RESULTS.md](RESULTS.md#x86-64).
+
+## Build
+
+The code uses the C++20 language. Clang compiles it. Meson, Ninja, and CMake are the build tools. On AArch64, Meson selects NEON. On x86-64, Meson selects AVX2.
 
 ```sh
 CXX=clang++-22 meson setup build --buildtype=release
 meson compile -C build
-meson test -C build --print-errorlogs
-meson compile -C build format-check tidy
+meson test -C build
+taskset -c 8 build/oa_bench --benchmark_min_time=0.1s --benchmark_repetitions=5 \
+    --benchmark_enable_random_interleaving=true
 ```
 
-Meson selects NEON on AArch64 and AVX2 on x86-64. Automatic vectorization is off for project code,
-so the scalar lookups stay scalar. The `.clang-format` and `.clang-tidy` files are copies of
-ClickHouse's.
+The full run takes about 45 minutes. It needs memory for an 8 GiB table plus a 2 GiB query trace.
 
-Sanitizer build:
-
-```sh
-CXX=clang++-22 meson setup build-sanitize --buildtype=debug -Db_sanitize=address,undefined
-meson compile -C build-sanitize
-meson test -C build-sanitize --print-errorlogs
-```
-
-The tests check every lookup against a reference map. They cover collisions, full groups,
-wraparound, high key bits, duplicate updates, sizing limits, and empty tables. A second test binary
-runs the same checks on the other backend's SIMD lookup, compiled for the host CPU. This works
-because both backends use only Clang's vector types. Run `OA_LARGE_TESTS=1 meson test -C build` to
-also check an 8 GiB grouped table, the smallest one whose group index uses hash bit 28. Each test
-binary builds its own table, so this needs 16 GiB of memory.
-
-## Measurement
-
-The benchmark covers 2^10, 2^12, ..., 2^28 keys, each with 0%, 50%, and 100% hits. At 2^28 keys the
-table takes 8 GiB and the query trace 2 GiB. A full run takes about 45 minutes.
-
-Run it on an idle core of a quiet machine. Other processes share the L3 cache and the memory
-bandwidth. On a busy machine, results for 8 MiB to 32 MiB tables varied by up to 54% between runs.
-
-```sh
-taskset -c 8 build/oa_bench \
-    --benchmark_min_time=0.1s --benchmark_min_warmup_time=0.05 \
-    --benchmark_repetitions=5 --benchmark_enable_random_interleaving=true \
-    --benchmark_display_aggregates_only=true \
-    --benchmark_out=sweep.json --benchmark_out_format=json
-python3 tools/summarize.py sweep.json
-python3 tools/plot.py docs/lookup-time.svg sweep.json
-```
-
-Each case first builds its table. It then times full passes over a shuffled query trace with one
-query per distinct key. The timing covers hashing, probing, loading the value, and summing the
-values. After timing, the benchmark checks the hit count and the value checksum. To run a subset,
-use `--benchmark_filter`, for example `--benchmark_filter='.*keys:268435456/'` for the largest
-tables.
-
-Hardware counters come from a separate run with `OA_PMU=1`. That run needs root, or
-`kernel.perf_event_paranoid` set to 2 or lower. It reads the counters once per pass, which adds
-time, so use its counts and not its times:
-
-```sh
-sudo env OA_PMU=1 taskset -c 8 build/oa_bench --benchmark_filter='/keys:268435456/' \
-    --benchmark_min_time=0.1s --benchmark_out=counters.json --benchmark_out_format=json
-python3 tools/summarize.py sweep.json --counters counters.json
-```
-
-`oa_probe_stats` counts compares and cache lines by replaying insertion and lookup on plain key
-arrays. With `--verify`, it first checks that the replay puts every key in the same slot as the
-real tables:
-
-```sh
-build/oa_probe_stats --verify 20
-build/oa_probe_stats 28
-```
-
-## Repository layout
-
-| Path | Contents |
-| --- | --- |
-| `src/hash_tables.hpp` | The two table layouts and the three lookups |
-| `src/workload.hpp` | Key generation and shuffled query traces |
-| `src/benchmark.cpp` | Google Benchmark harness |
-| `src/perf_counters.hpp` | Optional Linux perf counters, turned on by `OA_PMU=1` |
-| `tests/hash_tables_test.cpp` | Correctness tests against a reference map |
-| `tools/probe_stats.cpp` | Compares and cache lines per lookup |
-| `tools/summarize.py`, `tools/plot.py` | Tables and the chart from benchmark JSON |
-| `docs/lookup-time.svg` | The chart above |
+The exact commands for the published numbers are in [RESULTS.md](RESULTS.md#reproduce).
 
 ## License
 
-[Apache License 2.0](LICENSE).
+The license is the [Apache License 2.0](LICENSE).
