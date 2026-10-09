@@ -1,21 +1,21 @@
 # Results
 
-Measured on 2026-10-09 on four AWS `m8g.4xlarge` instances (Graviton4, Arm Neoverse V2) in
-`ap-south-2a`. The [README](README.md) explains the kernels and why they differ. This page holds the
-complete numbers and the method.
+These measurements were taken on 2026-10-09 on four AWS `m8g.4xlarge` instances (Graviton4, Arm
+Neoverse V2) in `ap-south-2a`. The [README](README.md) describes the three lookups and explains the
+differences. This page holds the complete numbers and the method.
 
 ## Setup
 
 | | |
 | --- | --- |
 | Instances | 4 x `m8g.4xlarge`: 16 Neoverse V2 cores, 64 GiB, Ubuntu 26.04, Linux 7.0.0-1008-aws |
-| Caches | 64 KiB L1 data and 2 MiB L2 per core; 36 MiB L3 shared by the whole processor |
+| Caches | 64 KiB L1 data and 2 MiB L2 per core, 36 MiB L3 shared by the whole processor |
 | Compiler | Clang 22.1.8, `-O3`, `-fno-vectorize -fno-slp-vectorize`, NEON through xsimd 14.3.0 |
 | Harness | Google Benchmark 1.9.4, one thread pinned to CPU 8 |
 | Binary | One `oa_bench` build, copied unchanged to all four instances |
 
-Each instance ran a disjoint share of the cases, so all kernels in one row of a table always ran on
-the same machine:
+The cases were split across the instances by table row, so the three lookups in any row ran on the
+same machine:
 
 | Instance | Cases |
 | --- | --- |
@@ -24,26 +24,28 @@ the same machine:
 | 3 | 2^28 keys, 100% hits; counters at 2^28 keys |
 | 4 | All other table sizes |
 
-An `m8g.4xlarge` is a slice of a larger processor, so other tenants can share its L3 cache and
-memory bandwidth. Five interleaved repetitions per case and the variation report below show how
-much that mattered.
+An `m8g.4xlarge` uses part of a larger processor. Other tenants can share its L3 cache and its
+memory bandwidth. The variation report below shows how much the five runs of each case differ.
 
 ## Workload
 
-- Keys are distinct 64-bit values from a bijective mix of `1, 2, ..., N`. Absent keys come from a
-  disjoint range of the same mix.
-- Capacity is `2 * bit_ceil(N)`, so the load factor is exactly 0.5. Each table holds `32 * N` bytes.
-- The query trace holds `N` keys, shuffled with a fixed seed. 0%, 50%, and 100% of them are present.
-- One timed pass looks up every query and sums the values found. Hit count and value checksum are
-  checked after timing. Table construction and shuffling are not timed.
-- Google Benchmark counts every lookup as one iteration. Each case runs at least 0.1 s after a 0.05 s
-  warmup, five times, with the order of all repetitions randomly interleaved.
+- Keys are the numbers 1 to N, passed through the splitmix64 finalizer. The finalizer is a
+  bijection, so the keys are distinct and nonzero. Absent keys are N + 1 to 2N, passed through the
+  same function.
+- The capacity is `2 * bit_ceil(N)`, so the load factor is exactly 0.5. Each table holds `32 * N`
+  bytes.
+- The query trace holds N keys, shuffled with a fixed seed. Either 0%, 50%, or 100% of them are
+  present.
+- One timed pass looks up every query and sums the values found. The benchmark checks the hit count
+  and the value checksum after timing. Building the table and shuffling the trace are not timed.
+- Google Benchmark counts each lookup as one iteration. Each case runs for at least 0.1 s after a
+  0.05 s warmup. It runs five times, and the order of all runs is randomly interleaved.
 
 ## Lookup time
 
-Median nanoseconds per lookup over five repetitions. Bold is the lowest median in its row.
+Median nanoseconds per lookup over five runs. Bold marks the lowest median in each row.
 
-| Keys | Table | Hits | Linear probing | Grouped, cyclic scalar | Grouped, SIMD |
+| Keys | Table | Hits | Linear probing | Cyclic scalar | SIMD |
 | --- | --- | ---: | ---: | ---: | ---: |
 | 2^10 | 32 KiB | 0% | 1.91 | 2.38 | **1.61** |
 | 2^10 | 32 KiB | 50% | **1.71** | 2.08 | 1.85 |
@@ -76,65 +78,67 @@ Median nanoseconds per lookup over five repetitions. Bold is the lowest median i
 | 2^28 | 8 GiB | 50% | 40.82 | 26.39 | **19.36** |
 | 2^28 | 8 GiB | 100% | 15.74 | 16.08 | **15.30** |
 
-Run-to-run variation is the coefficient of variation over the five runs of a case. It is at most
+Run-to-run variation is the coefficient of variation over the five runs of a case. Its maximum is
 6.83%. Four cases exceed 5%, all at 512 KiB or 32 MiB:
 
-| Kernel | Table | Hits | Variation |
+| Lookup | Table | Hits | Variation |
 | --- | --- | ---: | ---: |
-| Grouped, SIMD | 512 KiB | 0% | 6.83% |
+| SIMD | 512 KiB | 0% | 6.83% |
 | Linear probing | 512 KiB | 100% | 6.65% |
-| Grouped, SIMD | 32 MiB | 100% | 6.45% |
-| Grouped, SIMD | 32 MiB | 0% | 5.46% |
+| SIMD | 32 MiB | 100% | 6.45% |
+| SIMD | 32 MiB | 0% | 5.46% |
 
-From 2 MiB up, the fastest kernel's range of runs overlaps another kernel's range in one row only:
-all hits at 32 MiB, where all three kernels overlap. At 512 KiB with all hits, the three overlap too.
+From 2 MiB up, the fastest lookup's range of runs overlaps another range in one row only. That row
+is all hits at 32 MiB, where the three ranges overlap. The three ranges also overlap at 512 KiB with
+all hits.
 
 ## Small tables and the branch predictor
 
-At 2^10 and 2^12 keys the query trace has only 1,024 or 4,096 entries, and it repeats on every pass.
-The branch predictor learns that sequence:
+At 2^10 and 2^12 keys, the query trace has only 1,024 or 4,096 entries, and it repeats on every
+pass. The branch predictor learns that sequence:
 
 | Linear-probing misses | 32 KiB | 128 KiB | 512 KiB | 2 MiB |
 | --- | ---: | ---: | ---: | ---: |
 | Branch misses per lookup | 0.001 | 0.003 | 1.00 | 1.18 |
 
-These counts come from one `OA_PMU=1` run on a `m8g.24xlarge` development machine. They depend on
-the code and the query order, not on other load. They explain why linear-probing misses jump from
-2.17 ns to 11.17 ns between 128 KiB and 512 KiB, although both tables fit in the 2 MiB L2. The two
-smallest sizes are a best case for every kernel whose branches depend on the data.
+These counts come from one `OA_PMU=1` run on an `m8g.24xlarge` development machine. They depend on
+the code and the query order, not on other load. Both tables fit in the 2 MiB L2, yet
+linear-probing misses go from 2.17 ns at 128 KiB to 11.17 ns at 512 KiB. These counts explain the
+jump. The two smallest sizes are a best case for every lookup whose branches depend on the data.
 
 ## Hardware counters
 
-Per-lookup user-space counts from a separate `OA_PMU=1` run, one repetition per case. Branch misses
-are Linux's generic `branch-misses` event. Counter runs read the counters once per pass, so their
-times are not used.
+These are user-space counts per lookup from a separate `OA_PMU=1` run, with one run per case.
+Branch misses are Linux's generic `branch-misses` event. A counter run reads the counters once per
+pass, so its times are not used.
 
-| Keys | Hits | Kernel | Instructions | Cycles | Branch misses |
+| Keys | Hits | Lookup | Instructions | Cycles | Branch misses |
 | --- | ---: | --- | ---: | ---: | ---: |
 | 2^24 | 0% | Linear probing | 28.50 | 92.7 | 1.409 |
-| 2^24 | 0% | Grouped, cyclic scalar | 34.15 | 70.2 | 1.311 |
-| 2^24 | 0% | Grouped, SIMD | 28.97 | 38.8 | 0.287 |
+| 2^24 | 0% | Cyclic scalar | 34.15 | 70.2 | 1.311 |
+| 2^24 | 0% | SIMD | 28.97 | 38.8 | 0.287 |
 | 2^24 | 50% | Linear probing | 26.62 | 105.9 | 1.500 |
-| 2^24 | 50% | Grouped, cyclic scalar | 30.74 | 68.3 | 1.413 |
-| 2^24 | 50% | Grouped, SIMD | 29.33 | 51.3 | 0.879 |
+| 2^24 | 50% | Cyclic scalar | 30.74 | 68.3 | 1.413 |
+| 2^24 | 50% | SIMD | 29.33 | 51.3 | 0.879 |
 | 2^24 | 100% | Linear probing | 24.75 | 41.9 | 0.584 |
-| 2^24 | 100% | Grouped, cyclic scalar | 27.34 | 42.9 | 0.544 |
-| 2^24 | 100% | Grouped, SIMD | 29.69 | 41.0 | 0.054 |
+| 2^24 | 100% | Cyclic scalar | 27.34 | 42.9 | 0.544 |
+| 2^24 | 100% | SIMD | 29.69 | 41.0 | 0.054 |
 | 2^28 | 0% | Linear probing | 28.50 | 100.6 | 1.419 |
-| 2^28 | 0% | Grouped, cyclic scalar | 34.15 | 75.0 | 1.301 |
-| 2^28 | 0% | Grouped, SIMD | 28.97 | 40.5 | 0.286 |
+| 2^28 | 0% | Cyclic scalar | 34.15 | 75.0 | 1.301 |
+| 2^28 | 0% | SIMD | 28.97 | 40.5 | 0.286 |
 | 2^28 | 50% | Linear probing | 26.63 | 111.5 | 1.498 |
-| 2^28 | 50% | Grouped, cyclic scalar | 30.75 | 72.2 | 1.396 |
-| 2^28 | 50% | Grouped, SIMD | 29.33 | 53.2 | 0.865 |
+| 2^28 | 50% | Cyclic scalar | 30.75 | 72.2 | 1.396 |
+| 2^28 | 50% | SIMD | 29.33 | 53.2 | 0.865 |
 | 2^28 | 100% | Linear probing | 24.75 | 43.7 | 0.569 |
-| 2^28 | 100% | Grouped, cyclic scalar | 27.34 | 45.0 | 0.534 |
-| 2^28 | 100% | Grouped, SIMD | 29.69 | 43.1 | 0.055 |
+| 2^28 | 100% | Cyclic scalar | 27.34 | 45.0 | 0.534 |
+| 2^28 | 100% | SIMD | 29.69 | 43.1 | 0.055 |
 
 ## Probe statistics
 
-`build/oa_probe_stats` replays insertion and lookup on bare key arrays and counts what each lookup
+`build/oa_probe_stats` replays insertion and lookup on plain key arrays and counts what each lookup
 reads. A line is one 64-byte cache line. The lane 0 row describes the table that `SIMDGroupedOA`
-searches; its key compares are those of a scalar scan from lane 0, described under earlier designs.
+searches. Its key compares are those of a scalar scan from lane 0, which is one of the earlier
+designs below.
 
 | Probe order | Hit: key compares | Hit: lines | Hit: 2+ lines | Hit: first compare matches | Miss: key compares | Miss: lines | Miss: 2+ lines |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -158,38 +162,38 @@ key in the same slot.
 
 ## Instructions on the hot path
 
-Counted in the disassembly, including hashing and the benchmark loop:
+These counts come from the disassembly, and they include the hash and the benchmark loop:
 
-| Path | `SIMDGroupedOA` | Per-lane-mask version |
+| Path | `SIMDGroupedOA` | Earlier SIMD lookup with per-lane masks |
 | --- | ---: | ---: |
 | Hit in the home group | 29 | 34 |
 | Miss that ends in the home group | 26 | 39 |
 | Each further full group | 13 | 27 |
 
-`SIMDGroupedOA` narrows both compare results with `uzp1` and `xtn`, moves them to a general register
-once, and branches once. A hit then needs `clz`, `sub`, and `ldr`, plus one `add` that recomputes the
-group address. A miss tests `keys[3]` with one scalar load. The per-lane-mask version moved four
-64-bit lanes to general registers and rebuilt a 4-bit mask with `extr`, `and`, and `bfi`: eight
-instructions before the branch. It did the same again to find an empty lane.
+`SIMDGroupedOA` narrows both compare results with `uzp1` and `xtn`. It moves them to a general
+register once and branches once. A hit then needs `clz`, `sub`, and `ldr`, plus one `add` that
+recomputes the group address. A miss tests `keys[3]` with one scalar load.
+
+The earlier lookup moved four 64-bit lanes to general registers and rebuilt a 4-bit mask with
+`extr`, `and`, and `bfi`. That took eight instructions before the branch. It then did the same with
+two more compares to look for an empty lane.
 
 ## Earlier designs
 
-### Simpler grouped lookups
+### Scalar scan from lane 0
 
-Two simpler designs led to the current grouped lookups. They were measured with the same setup as
-the tables above.
+This scalar lookup searched the table of `SIMDGroupedOA`. It compared lanes 0 to 3 in order and
+then tested for an empty lane. Its first compare found 43% of hits, and a hit compared 2.10 keys.
+In the 8 GiB table it ran 34.68 instructions and 98.4 cycles per miss, with 1.36 branch misses. Per
+hit it ran 27.21 instructions and 57.1 cycles, with 1.05 branch misses.
 
-**Scalar scan from lane 0.** This scalar lookup searched `SIMDGroupedOA`'s table, comparing lanes 0
-to 3 in order before testing for an empty lane. Its first compare found only 43% of hits, and a hit
-compared 2.10 keys. In the 8 GiB table it ran 34.68 instructions and 98.4 cycles per miss, with 1.36
-branch misses. Per hit it ran 27.21 instructions and 57.1 cycles, with 1.05 branch misses.
+### SIMD with per-lane masks
 
-**SIMD with per-lane masks.** This version made the same two compares as `SIMDGroupedOA`, then
-extracted each 64-bit result separately, and tested for an empty lane with two more compares. In the
-8 GiB table it ran 45.17 instructions and 79.5 cycles per miss, with 0.25 branch misses. Per hit it
-ran 35.34 instructions and 63.6 cycles, with 0.05 branch misses.
+This SIMD lookup used the code described under the hot path above. In the 8 GiB table it ran 45.17
+instructions and 79.5 cycles per miss, with 0.25 branch misses. Per hit it ran 35.34 instructions
+and 63.6 cycles, with 0.05 branch misses.
 
-Median nanoseconds per lookup:
+Both designs were measured with the same setup as the tables above. Median nanoseconds per lookup:
 
 | Keys | Table | Lane 0 scan: misses | Half hits | Hits | Per-lane masks: misses | Half hits | Hits |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -206,26 +210,26 @@ Median nanoseconds per lookup:
 
 ### Tuning experiments
 
-These experiments ran on a shared `m8g.24xlarge` development machine, so their times are not
-comparable with the tables above. The full log is in this file's git history.
+These experiments ran on a shared `m8g.24xlarge` development machine, so their times cannot be
+compared with the tables above. The full log is in the git history of this file.
 
-- **Cyclic start lane.** Starting the scalar scan at `hash & 3` raised the share of hits found by
-  the first compare from 43% to 75%, and cut compares per hit from 2.10 to 1.52.
-- **One loop for the cyclic scan.** A single loop that returns on the first match or the first empty
-  lane replaced a version with a separate first-lane test. At 2^24 keys it cut hit time from 18.8 ns
-  to 16.3 ns.
-- **Cheaper group address.** Keeping the probe position as a cell index lets Clang address a group
-  with one `add ..., lsl #4` instead of `lsr` plus `add ..., lsl #6`. That saved about 1 ns per lookup
-  at 2^28 keys in a paired test. In the same test, one extra independent `and` on the hit path of
-  linear probing cost 0.42 ns at 2^28 keys, and three cost 2.03 ns.
-- **Two SIMD variants that lost.** Indexing values with `3 - countl_zero / 16` made Clang add a sign
-  extension and keep a null check, for 33 instructions per hit. Building the value offset with xsimd
-  `select` and `reduce_add` needed two 128-bit constants. AArch64 calls do not preserve 128-bit
-  vector registers, so the constants were reloaded from the stack on every probe.
+- Cyclic start lane: starting the scalar scan at `hash & 3` raised the share of hits found by the
+  first compare from 43% to 75%. It cut compares per hit from 2.10 to 1.52.
+- One loop for the cyclic scan: the lookup returns from a single loop on the first match or the first
+  empty lane. This replaced a version with a separate test for the first lane. At 2^24 keys, hit time
+  fell from 18.8 ns to 16.3 ns.
+- Cheaper group address: keeping the probe position as a cell index lets Clang address a group with
+  one `add ..., lsl #4`, instead of `lsr` plus `add ..., lsl #6`. In a paired test at 2^28 keys this
+  saved about 1 ns per lookup. In the same test, one extra independent `and` on the hit path of
+  linear probing cost 0.42 ns, and three cost 2.03 ns.
+- Two SIMD variants that were slower: indexing the values with `3 - countl_zero / 16` cost 33
+  instructions per hit, because Clang added a sign extension and kept a null check. Computing the
+  value offset with xsimd `select` and `reduce_add` needed two 128-bit constants. AArch64 calls do not preserve
+  128-bit vector registers, so the constants were reloaded from the stack on every probe.
 
 ## Reproduce
 
-Build as described in the README, then run the full matrix on one machine:
+Build as described in the README. Then run the full matrix on one machine:
 
 ```sh
 taskset -c 8 build/oa_bench \
@@ -241,5 +245,5 @@ python3 tools/summarize.py sweep.json --counters counters.json
 python3 tools/plot.py docs/lookup-time.svg sweep.json
 ```
 
-To split the work across machines as above, give each machine a `--benchmark_filter` with whole
+To split the work across machines, give each machine a `--benchmark_filter` that selects whole
 rows, such as `'/keys:268435456/hit_percent:0/'`. Then pass all the JSON files to both scripts.

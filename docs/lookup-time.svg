@@ -94,7 +94,7 @@
 <line x1="70" x2="98" y1="458" y2="458" stroke="#0072B2" stroke-width="2.5"/>
 <text x="104" y="462" font-size="12" fill="#222">Linear probing</text>
 <line x1="290" x2="318" y1="458" y2="458" stroke="#009E73" stroke-width="2.5"/>
-<text x="324" y="462" font-size="12" fill="#222">Grouped, cyclic scalar</text>
+<text x="324" y="462" font-size="12" fill="#222">Cyclic scalar</text>
 <line x1="510" x2="538" y1="458" y2="458" stroke="#D55E00" stroke-width="3.5"/>
-<text x="544" y="462" font-size="12" fill="#222">Grouped, SIMD</text>
+<text x="544" y="462" font-size="12" fill="#222">SIMD</text>
 </svg>

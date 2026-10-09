@@ -15,8 +15,8 @@ from pathlib import Path
 
 KERNELS = (
     ("ScalarOA", "Linear probing"),
-    ("ScalarCyclicGroupedOA", "Grouped, cyclic scalar"),
-    ("SIMDGroupedOA", "Grouped, SIMD"),
+    ("ScalarCyclicGroupedOA", "Cyclic scalar"),
+    ("SIMDGroupedOA", "SIMD"),
 )
 HIT_RATES = (0, 50, 100)
 NAME = re.compile(r"(\w+)/keys:(\d+)/hit_percent:(\d+)/real_time")
