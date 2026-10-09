@@ -127,8 +127,12 @@ register and rebuilt a 4-bit mask, which took eight instructions before the bran
 work to look for an empty lane. A hit cost 34 instructions, and a miss in the home group cost 39. In
 the 8 GiB table it took 22.69 ns per hit and 28.46 ns per miss.
 
-On x86-64, the same source compiles to one 256-bit `vpcmpeqq`, one `vmovmskpd`, and the same lane 3
-test. That build compiles, but it has not been run or measured.
+On x86-64, the AVX2 loop compares a group with one 256-bit `vpcmpeqq` and moves the result to a
+general register with one `vmovmskpd`. It has the same lane 3 test. It keeps the probe position as
+a byte offset, because x86 addressing cannot scale a group index by 64. The NEON loop keeps the
+group index, which AArch64 scales inside `add ..., lsl #6`. In the x86-64 disassembly, each further
+group costs 9 instructions with the byte offset, against 13 with a group index. The AVX2 build has
+not been run on x86-64, so its effect on lookup time is unmeasured.
 
 ### Hardware counters
 

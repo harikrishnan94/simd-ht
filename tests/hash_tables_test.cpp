@@ -212,6 +212,36 @@ void testWraparound()
     checkLookup(scalar, grouped, cyclic, keys.back(), nullptr);
 }
 
+void testGroupedPlacement()
+{
+    GroupedTable table(16);
+    std::vector<Key> keys;
+    for (Key key = 1; key < 10000 && keys.size() < 13; ++key)
+    {
+        if ((simd_ht::hashKey(key) & 31) == 31)
+            keys.push_back(key);
+    }
+    require(keys.size() == 13, "Could not find keys for the grouped placement test");
+
+    std::uintptr_t base = 0;
+    for (std::size_t i = 0; i < 12; ++i)
+    {
+        table.insert(keys[i], i);
+        for (std::size_t j = 0; j <= i; ++j)
+        {
+            const Value * found = table.findSimd(keys[j]);
+            require(found && *found == j, "SIMD grouped lookup failed after an insertion");
+            const std::size_t group = (7 + j / 4) & 7;
+            const std::size_t offset = group * sizeof(simd_ht::Group) + offsetof(simd_ht::Group, values) + (j & 3) * sizeof(Value);
+            const auto address = reinterpret_cast<std::uintptr_t>(found);
+            if (i == 0)
+                base = address - offset;
+            require(base % sizeof(simd_ht::Group) == 0 && address == base + offset, "SIMD grouped lookup used the wrong group or lane");
+        }
+        require(table.findSimd(keys.back()) == nullptr, "SIMD grouped lookup returned an absent key");
+    }
+}
+
 void testCyclicPlacement()
 {
     for (std::size_t start_lane = 0; start_lane < 4; ++start_lane)
@@ -363,6 +393,7 @@ int main()
         testSpecialKeys();
         testInsertionLimit();
         testWraparound();
+        testGroupedPlacement();
         testCyclicPlacement();
         testRandomReference();
         testWorkloads();

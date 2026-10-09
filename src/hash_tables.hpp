@@ -172,22 +172,17 @@ public:
     {
         if (key == 0)
             return nullptr;
+        // Insertion fills the lowest empty lane and never deletes, so a group with a free slot has lane 3 empty.
 #if defined(SIMD_HT_NEON64)
         using KeyPair = Key __attribute__((vector_size(16), aligned(16), may_alias));
         using Words = uint32_t __attribute__((vector_size(16)));
         using Fields = uint16_t __attribute__((vector_size(8)));
         const KeyPair needle = {key, key};
-#else
-        using KeyQuad = Key __attribute__((vector_size(32), aligned(32), may_alias));
-        using LaneBits = bool __attribute__((ext_vector_type(4)));
-        const KeyQuad needle = {key, key, key, key};
-#endif
         const size_t group_mask = cell_mask >> 2;
         size_t pos = (hashKey(key) & cell_mask) >> 2;
         for (;;)
         {
             const auto & group = groups[pos];
-#if defined(SIMD_HT_NEON64)
             const auto low = std::bit_cast<Words>(*reinterpret_cast<const KeyPair *>(group.keys) == needle);
             const auto high = std::bit_cast<Words>(*reinterpret_cast<const KeyPair *>(group.keys + 2) == needle);
             // Lane i's comparison fills bits [16 * i, 16 * i + 16).
@@ -198,18 +193,32 @@ public:
             if (matches)
                 return reinterpret_cast<const Value *>(
                     reinterpret_cast<const std::byte *>(&group.values[3]) - static_cast<size_t>(std::countl_zero(matches)) / 2);
+            if (group.keys[3] == 0)
+                return nullptr;
+            pos = (pos + 1) & group_mask;
+        }
 #else
+        using KeyQuad = Key __attribute__((vector_size(32), aligned(32), may_alias));
+        using LaneBits = bool __attribute__((ext_vector_type(4)));
+        const KeyQuad needle = {key, key, key, key};
+        // x86 addressing cannot scale a group index by 64, so keep the probe position in bytes.
+        // Widen before shifting: a 32-bit shift drops hash bits 28 to 31, which tables of 2^27 or more groups use.
+        const size_t byte_mask = (groups.size() - 1) * sizeof(Group);
+        size_t offset = (static_cast<size_t>(hashKey(key)) << 4) & byte_mask;
+        const auto * base = reinterpret_cast<const std::byte *>(groups.data());
+        for (;;)
+        {
+            const auto & group = *reinterpret_cast<const Group *>(base + offset);
             const auto equal = __builtin_convertvector(*reinterpret_cast<const KeyQuad *>(group.keys) == needle, LaneBits);
             // Bits 4 to 7 of a four-lane bool vector are padding, so std::bit_cast to a byte would read them.
             const unsigned matches = unsigned{equal[0]} | unsigned{equal[1]} << 1 | unsigned{equal[2]} << 2 | unsigned{equal[3]} << 3;
             if (matches)
                 return &group.values[std::countr_zero(matches)];
-#endif
-            // Insertion fills the lowest empty lane and never deletes, so a group with a free slot has lane 3 empty.
             if (group.keys[3] == 0)
                 return nullptr;
-            pos = (pos + 1) & group_mask;
+            offset = (offset + sizeof(Group)) & byte_mask;
         }
+#endif
     }
 
     size_t size() const { return key_count; }
