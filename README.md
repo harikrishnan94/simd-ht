@@ -4,7 +4,7 @@ This page reports timed lookups on three hash tables. Each key and each value is
 
 The key is stored in the table, next to its value. A separate list of keys for one slot is called a bucket. This table has no buckets. This layout is called open addressing.
 
-The runs used one core of the Arm Neoverse V2 design. Graviton4 is the name of that core in these runs.
+The runs used one core of the Arm Neoverse V2 design. Graviton4 is the AWS processor built from those cores.
 
 Each table is half full. The share of filled slots is the load factor. Here the load factor is 0.5.
 
@@ -67,9 +67,13 @@ Branch misses in this table are mispredicted branches. Each column is per lookup
 | First SIMD version, one mask per lane | 0.25 | 45.17 | 79.5 | 28.46 |
 | SIMD grouped lookup (`SIMDGroupedOA`) | 0.29 | 28.97 | 40.5 | 14.57 |
 
+Against linear probing, the SIMD lookup differs in branch misses and in cache lines, not in instructions. A SIMD miss runs 28.97 instructions, against 28.50. It has 0.29 branch misses, against 1.42. It reads 1.228 cache lines, against 1.375 ([RESULTS.md](RESULTS.md#the-five-designs)). Against the first SIMD version, it differs mainly in instructions.
+
 My reading is that the lookups do not depend on each other. One lookup can be waiting on memory while the core starts later instructions. The core may start only a limited number of those instructions. That limit is the out-of-order window.
 
 A cache miss is a load that does not find its data in the cache. Fewer instructions per lookup let more lookups fit in that window. More cache misses can then be waiting at once. A cache miss that has started, and has not finished, is a miss in flight.
+
+A mispredicted branch throws away the work after it. That includes loads already started for later lookups.
 
 Adding 3 unused `and` instructions to linear probing cost 12.8% at 8 GiB, with all hits. That fits this reading. I have not measured the number of misses in flight.
 
@@ -144,6 +148,8 @@ At 32 KiB and at 128 KiB, with every lookup hitting, linear probing is faster.
 - At 512 KiB, the time depends on where the loop sits in memory. Two builds use the same loop instructions. On misses, linear probing differs by 39% between those builds.
 
 - The table is insert-only. The `keys[3]` test does not work if a key can be deleted.
+
+- The counters do not split the gain over linear probing between fewer branch misses and fewer cache lines.
 
 - The x86-64 SIMD path is AVX2. It was run on eight `m7i.4xlarge` instances. The times are in [RESULTS.md](RESULTS.md#x86-64).
 
