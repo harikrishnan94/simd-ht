@@ -4,7 +4,7 @@ This page is the full record behind the [README](README.md). It covers five look
 
 It includes the CPU's counts of instructions, cycles, and wrong branch guesses. Those counts are the hardware counters. It includes every table size. It also records how the numbers were checked.
 
-The main run was on 2026-10-09. It used four AWS `m8g.4xlarge` instances in `ap-south-2a`. The CPU design is Arm Neoverse V2. Graviton4 is the name of that core in these runs.
+The main run was on 2026-10-09. It used four AWS `m8g.4xlarge` instances in `ap-south-2a`. The CPU design is Arm Neoverse V2. Graviton4 is the AWS processor built from those cores.
 
 A section that uses a different run says so.
 
@@ -643,7 +643,7 @@ These experiments ran on the shared `m8g.24xlarge` development machine. Their ti
 
 - One loop for the cyclic scan. The lookup returns from a single loop. It returns on the first match, or on the first empty lane. This replaced a version with a separate test for the first lane. At 2^24 keys, hit time fell from 18.8 ns to 16.3 ns.
 
-- Cheaper group address: the probe position is kept as a cell index. Clang can then address a group with one `add ..., lsl #4`. The other form starts with `lsr`, a shift of bits to the right. It then does `add ..., lsl #6`. In a paired test at 2^28 keys, this saved about 1 ns per lookup. The same run held the control experiment above.
+- Cheaper group address in the cyclic scalar scan: its probe position is kept as a cell index. Clang can then address a group with one `add ..., lsl #4`. The other form starts with `lsr`, a shift of bits to the right. It then does `add ..., lsl #6`. In a paired test at 2^28 keys, this saved about 1 ns per lookup. The same run held the control experiment above.
 
 - Two SIMD variants were slower. `countl_zero` counts leading zero bits. One variant indexed the values with `3 - countl_zero / 16`. A hit took 33 instructions.
 
