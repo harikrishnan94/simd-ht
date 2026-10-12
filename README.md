@@ -1,30 +1,47 @@
 # simd-ht
 
-This page reports timed lookups on three hash tables. Each key and each value is a 64-bit integer.
+Three open-addressing hash-table lookups on 64-bit keys, timed on Graviton4 and on Sapphire Rapids. Linear probing is the baseline. The other two search groups of four keys. The cyclic scalar scan checks one key at a time. The SIMD lookup compares all four at once and tests them with one branch.
 
-The key is stored in the table, next to its value. A separate list of keys for one slot is called a bucket. This table has no buckets. This layout is called open addressing.
+Each table is half full. From 2 MiB to 8 GiB, SIMD misses (lookups of absent keys) are 2.1-2.8x faster than linear probing, on both CPUs.
 
-The runs used one core of the Arm Neoverse V2 design. Graviton4 is the AWS processor built from those cores.
+Each time is the median of 5 runs, interleaved in random order with the other lookups. The AWS instances ran only this benchmark, on one thread pinned to one CPU. Every run checks its hit count and its value checksum. The largest run-to-run variation is 6.83% on Graviton4 and 12.87% on Sapphire Rapids.
 
-Each table is half full. The share of filled slots is the load factor. Here the load factor is 0.5.
+- **With half the lookups hitting, SIMD is 1.4-2.1x faster than linear probing** on Graviton4, and 1.4-2.4x on Sapphire Rapids, from 2 MiB up.
+- **Hits gain less.** From 128 MiB up, SIMD hits are 2-3% faster on Graviton4. On Sapphire Rapids, from 2 MiB up, they are 1.2-1.8x faster.
+- **Cutting branch mispredictions was not enough to beat the scalar scan.** A SIMD lookup with one mask bit per lane had 0.25 branch mispredictions per miss. It was still 6% slower than the cyclic scalar scan. It ran 45 instructions per miss; the final SIMD lookup runs 29.
+- **Linear probing wins on hits in small tables.** At 32 KiB and 128 KiB, with every lookup hitting, it is faster on both CPUs.
 
-A KiB is 1,024 bytes. A MiB is 1,024 KiB. A GiB is 1,024 MiB. The smallest table is 32 KiB. The largest table is 8 GiB.
+![Lookup time vs table size](docs/lookup-time.svg)
 
-Three lookups are measured. The name in parentheses is the benchmark name.
+The chart shows the three lookups on Graviton4 at every table size.
 
-- The table is a row of 16-byte cells. A cell holds one key and one value. The lookup starts at the cell the hash selects. It then tries each next cell. It stops when it finds the key or an empty cell. This is linear probing (`ScalarOA`).
+## The three lookups
 
-- Keys and values sit in groups of 64 bytes. A group holds 4 keys, then 4 values. Each of those 4 positions is a lane, numbered 0 to 3. The scan starts at lane `hash & 3`. After the scan checks lane 3, it checks lane 0 next, in the same group. This is the cyclic grouped scan (`ScalarCyclicGroupedOA`).
+All three tables use open addressing: keys and values sit in the table itself, with no buckets. The load factor is 0.5. Key 0 marks an empty slot.
 
-SIMD means one instruction works on several keys at once. On this core those instructions are called NEON.
+```text
+Linear probing: 16-byte cells, four per 64-byte cache line
+  | key | value | key | value | key | value | key | value |
+  start at cell  hash & (capacity - 1),  then try the next cell
 
-- The group has the same 64-byte shape. Insertion fills the lowest free lane. One branch then tests whether any of the 4 keys matched. This is the SIMD grouped lookup (`SIMDGroupedOA`).
+Grouped: one 64-byte group per cache line
+  | key 0 | key 1 | key 2 | key 3 | value 0 | value 1 | value 2 | value 3 |
+  start at group  (hash & (capacity - 1)) / 4,  then try the next group
+```
+
+- **Linear probing** (`ScalarOA`) is the baseline. The lookup starts at the cell the hash selects and tries each next cell. It stops at the key or at an empty cell.
+- **Cyclic grouped scan** (`ScalarCyclicGroupedOA`) uses the grouped layout. Each of the 4 key positions is a lane, numbered 0 to 3. The scan starts at lane `hash & 3`, checks one key at a time, and wraps from lane 3 to lane 0.
+- **SIMD grouped lookup** (`SIMDGroupedOA`) uses the same groups, and insertion fills the lowest free lane. NEON on Graviton4, or AVX2 on Sapphire Rapids, compares all 4 keys at once. One branch then tests whether any key matched.
 
 ## Results
 
-These times are for the hash table of 8 GiB. That hash table holds 2^28 keys. The unit is nanoseconds per lookup. Each number is the median of 5 runs.
+These times are for the 8 GiB table, which holds 2^28 keys. The unit is nanoseconds per lookup, the median of 5 runs. The middle column is half hits and half misses.
 
-A hit means the key is in the table. A miss means the key is absent. The middle column is half hits and half misses.
+The tables range from 32 KiB to 8 GiB. [RESULTS.md](RESULTS.md#results-by-table-size) has every size.
+
+### Graviton4
+
+Four AWS `m8g.4xlarge` instances with Arm Neoverse V2 cores, on 2026-10-09. Clang 22.1.8, NEON, one core.
 
 | | All misses | 50% hits | All hits |
 | --- | ---: | ---: | ---: |
@@ -32,46 +49,47 @@ A hit means the key is in the table. A miss means the key is absent. The middle 
 | Cyclic grouped scan (`ScalarCyclicGroupedOA`) | 26.87 | 26.39 | 16.08 |
 | SIMD grouped lookup (`SIMDGroupedOA`) | 14.57 | 19.36 | 15.30 |
 
-![Lookup time vs table size](docs/lookup-time.svg)
+Every hit reads about one cache line, in all three layouts. The all-hit times stay close for that reason.
 
-The chart shows the same three lookups at every table size.
+### Sapphire Rapids
 
-From 2 MiB up, the SIMD lookup is 2.1-2.8x faster than linear probing on misses. With 50% hits, it is 1.4-2.1x faster. When every lookup hits, SIMD is only 2-3% faster than linear probing from 128 MiB up.
+Eight AWS `m7i.4xlarge` instances with the Intel Xeon Platinum 8488C, on 2026-10-09. Clang 22.1.8, AVX2, one logical CPU.
 
-A cache line is the 64-byte block the CPU loads from memory. Every hit reads about one cache line, in all three layouts. The all-hit times stay close for that reason.
+| | All misses | 50% hits | All hits |
+| --- | ---: | ---: | ---: |
+| Linear probing (`ScalarOA`) | 61.46 | 83.53 | 30.82 |
+| Cyclic grouped scan (`ScalarCyclicGroupedOA`) | 58.54 | 67.98 | 29.39 |
+| SIMD grouped lookup (`SIMDGroupedOA`) | 28.55 | 34.68 | 23.50 |
 
-[RESULTS.md](RESULTS.md) lists every table size. It records how many instructions the CPU ran. A cycle is one tick of the core's clock. It also records how many cycles those instructions took.
+[RESULTS.md](RESULTS.md#x86-64) has every table size for this run, and its hardware counters.
 
-It also records how often the CPU guessed a branch wrong. Those records are the hardware counters. It also counts the keys each lookup compares. It counts the cache lines each lookup reads.
+## Five designs, one change at a time
 
-Those key and line counts are the probe statistics. That page also describes two earlier designs. One compares the lanes from lane 0, one key at a time. A mask is a few bits that record which lanes matched. The other design builds one bit of that mask per lane. The page records how the numbers were checked.
+These counts are per lookup, for the 8 GiB table with every lookup missing, on Graviton4. Cache lines and key compares come from replaying the lookups. The other counts come from a separate counter run, and the times from the main run.
 
-## Why the SIMD lookup is faster on misses
+| Step | Change | Layer | Cache lines | Key compares | Branch mispredictions | Instructions | Cycles | ns |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | Linear probing (`ScalarOA`) | Baseline | 1.375 | 2.50 | 1.42 | 28.50 | 100.6 | 36.53 |
+| 2 | Four keys per cache line, scalar scan from lane 0 | Memory layout | 1.228 | 4.91 | 1.36 | 34.68 | 98.4 | 35.31 |
+| 3 | Step 2, scan from lane `hash & 3` (`ScalarCyclicGroupedOA`) | Probe order | 1.228 | 2.56 | 1.30 | 34.15 | 75.0 | 26.87 |
+| 4 | Step 2, SIMD compare, one mask bit per lane | Branches | 1.228 | 4 per group | 0.25 | 45.17 | 79.5 | 28.46 |
+| 5 | Step 4, one combined mask (`SIMDGroupedOA`) | Instructions | 1.228 | 4 per group | 0.29 | 28.97 | 40.5 | 14.57 |
 
-At load factor 0.5, a linear-probing miss compares 2.5 keys on average. The count varies a lot. 50% of misses stop at the first cell. 13.6% of misses need 5 or more cells.
+Step 5 is the only step that cut both cache lines and branch mispredictions while keeping about the instruction count of linear probing. Steps 2 and 4 are not in the current source. [RESULTS.md](RESULTS.md#the-five-designs) describes every step.
 
-The loop stops on the key or on an empty cell. The CPU often guesses wrong about when the loop will stop. A wrong guess is a branch misprediction. At 8 GiB, each miss has 1.42 branch mispredictions.
+## Fewer branch mispredictions, without extra instructions
 
-My first SIMD version removed most of those mispredictions. It had 0.25 mispredictions per miss. It was still slower than the cyclic grouped scan. That scan checks one key at a time.
+At load factor 0.5, a linear-probing miss compares 2.5 keys on average (Knuth, *The Art of Computer Programming*, Vol. 3, §6.4). The count varies a lot. 50% of misses stop at the first cell. 13.6% of misses need 5 or more cells.
 
-A mask is a few bits that record which lanes matched. That version built a 4-bit mask from the compare results. Building it took 8 instructions per group. The lookup built a second mask to find an empty lane.
+The loop stops on the key or on an empty cell. The CPU often guesses wrong about when the loop will stop. At 8 GiB, each miss has 1.42 branch mispredictions.
 
-On an average miss, the current version runs 29 instructions. The first version runs 45. The table below shows the same counts as 28.97 and 45.17. The misprediction rate is about the same.
+Step 4 removed most of those branch mispredictions: it has 0.25 per miss. It was still slower than the cyclic grouped scan. It built a 4-bit mask from the compare results. Building that mask took 8 instructions per group. The lookup then built a second mask to find an empty lane.
 
-Branch misses in this table are mispredicted branches. Each column is per lookup.
-
-| 8 GiB, all misses, per lookup | Branch misses | Instructions | Cycles | ns |
-| --- | ---: | ---: | ---: | ---: |
-| Linear probing (`ScalarOA`) | 1.42 | 28.50 | 100.6 | 36.53 |
-| Cyclic grouped scan (`ScalarCyclicGroupedOA`) | 1.30 | 34.15 | 75.0 | 26.87 |
-| First SIMD version, one mask per lane | 0.25 | 45.17 | 79.5 | 28.46 |
-| SIMD grouped lookup (`SIMDGroupedOA`) | 0.29 | 28.97 | 40.5 | 14.57 |
-
-Against linear probing, the SIMD lookup differs in branch misses and in cache lines, not in instructions. A SIMD miss runs 28.97 instructions, against 28.50. It has 0.29 branch misses, against 1.42. It reads 1.228 cache lines, against 1.375 ([RESULTS.md](RESULTS.md#the-five-designs)). Against the first SIMD version, it differs mainly in instructions.
+Against linear probing, the SIMD lookup differs in branch mispredictions and in cache lines, not in instructions. A SIMD miss runs 28.97 instructions, against 28.50. It has 0.29 branch mispredictions, against 1.42. It reads 1.228 cache lines, against 1.375. Against step 4, it differs mainly in instructions: 28.97 against 45.17.
 
 My reading is that the lookups do not depend on each other. One lookup can be waiting on memory while the core starts later instructions. The core may start only a limited number of those instructions. That limit is the out-of-order window.
 
-A cache miss is a load that does not find its data in the cache. Fewer instructions per lookup let more lookups fit in that window. More cache misses can then be waiting at once. A cache miss that has started, and has not finished, is a miss in flight.
+Fewer instructions per lookup let more lookups fit in that window. More cache misses can then be in flight at once.
 
 A mispredicted branch throws away the work after it. That includes loads already started for later lookups.
 
@@ -79,25 +97,11 @@ Adding 3 unused `and` instructions to linear probing cost 12.8% at 8 GiB, with a
 
 ## How the SIMD probe works
 
-The table never deletes a key. A table that only inserts is called insert-only. A key sits in at most one slot.
+The table never deletes a key, and a key sits in at most one slot. Two properties follow.
 
 1) At most one lane can match. The lookup does not need a separate mask bit for each lane.
 
-The first instruction compares keys 0 and 1. The second compares keys 2 and 3. Both write their results into one register. Each key uses 16 bits of that register.
-
-`cbnz` branches when that register is not zero. One `cbnz` then tests all 4 keys.
-
-Leading zeros are the zero bits before the first 1 bit. A match in lane 0 leaves 48 leading zeros. Each later lane leaves 16 fewer than the lane before it. For lane `i`, the code writes the count as `48 - 16 * i`.
-
-The values sit in order, from value 0 through value 3. Each value occupies 8 bytes. The compare result uses 16 bits per key. Two leading zeros make one byte of distance. The code divides the whole count by 2.
-
-The load starts at value 3. It moves back by that byte count. It arrives at value `i`.
-
-2) Insertion fills the lowest free lane. The lanes therefore fill from lane 0 toward lane 3. If any lane is free, lane 3 is free as well. `keys[3]` is then 0.
-
-A miss does one extra load of that key. That load reads a single key. 83.7% of groups are not full. The branch on `keys[3]` nearly always goes the same way.
-
-The compiler is Clang. Version 22 generates these instructions for one group. In the listing, a general register is a normal integer register. `uzp1` keeps one 32-bit half of each compare result. `xtn` narrows that half to 16 bits.
+Two `cmeq` instructions compare keys 0-1 and keys 2-3. `uzp1` keeps one 32-bit half of each compare result. `xtn` narrows that half to 16 bits per key, in one register. One `cbnz` then tests all 4 keys. Clang 22 generates these instructions for one group.
 
 ```asm
 ldp   q1, q2, [x15]          // load keys 0-1 and keys 2-3
@@ -109,53 +113,56 @@ fmov  x14, d1                // move the four fields to one general register
 cbnz  x14, hit               // one branch for four keys
 ```
 
-The home group is the first group the hash selects. A hit that stops there is 29 instructions in the compiled code. A miss that stops there is 26 instructions in the compiled code. Both counts include the hash and the benchmark loop.
+A match in lane `i` leaves `48 - 16 * i` leading zeros in that register. The values sit in order, 8 bytes each. Half the leading-zero count is therefore the distance in bytes from value 3 back to value `i`. Here the search key is in lane 1:
 
-These path counts are not the averages in the table above. Some lookups search past the home group. Those lookups run more instructions.
+```text
+keys        | k0     | k1     | k2     | 0      |   search key k1
+cmeq        | 0      | ones   | 0      | 0      |   64 bits per lane
+narrowed    | 0x0000 | 0xffff | 0x0000 | 0x0000 |   16 bits per lane, lane 0 lowest
+clz         32                                      48 - 16 * 1
+value       &values[3] - 32 / 2 bytes  =  &values[1]
+```
 
-The code is in [`src/hash_tables.hpp`](src/hash_tables.hpp). A vector type holds several keys in one variable. The code uses only vector types that are built into Clang. It does not use a separate SIMD library.
+2) Insertion fills the lowest free lane. A group with any free lane therefore has lane 3 free. When no lane matches, the lookup reads `keys[3]`, and a 0 there means the key is absent. 83.7% of groups are not full, so this branch nearly always goes the same way.
 
-x86-64 is the 64-bit instruction set for Intel and AMD processors. On x86-64, one instruction compares the keys in the group. Its name is `vpcmpeqq`. A second instruction moves that result into a normal integer register. Its name is `vmovmskpd`.
+The home group is the first group the hash selects. A hit that stops there runs 29 instructions, and a miss that stops there runs 26. Both counts include the hash and the benchmark loop. Each further full group adds 13 instructions.
 
-## Sapphire Rapids
+On x86-64, one `vpcmpeqq` compares all 4 keys, and `vmovmskpd` moves the result to a general-purpose register. There I keep the probe position as a byte offset, because x86 addressing cannot scale a group index by 64.
 
-A second run used one logical CPU of an Intel Xeon Platinum 8488C. That chip is Sapphire Rapids. The machines were eight AWS `m7i.4xlarge` instances in `ap-south-2a`. The date was 2026-10-09. The SIMD instructions on this CPU are AVX2.
+The code is in [`src/hash_tables.hpp`](src/hash_tables.hpp). It uses only the vector types built into Clang, with no separate SIMD library.
 
-The same three lookups ran again. The table below is the 8 GiB hash table, in nanoseconds per lookup. Each number is the median of 5 runs.
+## How the numbers were checked
 
-| | All misses | 50% hits | All hits |
-| --- | ---: | ---: | ---: |
-| Linear probing (`ScalarOA`) | 61.46 | 83.53 | 30.82 |
-| Cyclic grouped scan (`ScalarCyclicGroupedOA`) | 58.54 | 67.98 | 29.39 |
-| SIMD grouped lookup (`SIMDGroupedOA`) | 28.55 | 34.68 | 23.50 |
+- Every timed run checks its hit count and its value checksum, and fails on a mismatch.
+- The tests check every lookup against a reference table, including full groups, wraparound, and keys that share a first slot. They pass under AddressSanitizer and UndefinedBehaviorSanitizer.
+- Each case ran 5 times. Every lookup of one table row ran on the same instance, in one random order.
+- One binary went unchanged to every instance of a run. The current source compiles to the same timed loops as the measured Graviton4 binary.
+- Hardware counters come from a separate run, because reading them adds time.
+- At 2 MiB, two builds that place the same loops at different addresses agree within 0.4% on misses.
 
-From 2 MiB up, the SIMD lookup is 2.1-2.8x faster than linear probing on misses. With 50% hits, it is 1.4-2.4x faster. With every lookup hitting, it is 1.2-1.8x faster.
-
-At 32 KiB and at 128 KiB, with every lookup hitting, linear probing is faster.
-
-[RESULTS.md](RESULTS.md#x86-64) lists every table size for this run, plus the hardware counters.
+[RESULTS.md](RESULTS.md#how-the-results-were-checked) has the details.
 
 ## Caveats
 
-- The tables in [Results](#results) come from Graviton4. The compiler is Clang 22.1.8. The keys follow one distribution. The load factor is 0.5. The Sapphire Rapids times are in the section above.
+- Every run used Clang 22.1.8, one key distribution, and a load factor of 0.5.
 
-- The benchmark times a stream of lookups that do not depend on each other. That rate is throughput. It does not time one lookup running alone. That single wait is latency.
+- The benchmark measures throughput: a stream of lookups that do not depend on each other. It does not measure the latency of one lookup alone.
 
 - Below 2 MiB, the results are mixed.
 
-- The branch predictor is the part of the core that guesses which way a branch will go. The query trace is the list of keys to look up. At 32 KiB and at 128 KiB, that predictor learns the list. Linear probing is then faster on hits.
+- At 32 KiB and at 128 KiB, the branch predictor learns the query trace, the list of keys to look up. Linear probing is then faster on hits.
 
-- At 512 KiB, the time depends on where the loop sits in memory. Two builds use the same loop instructions. On misses, linear probing differs by 39% between those builds.
+- At 512 KiB, the time depends on where the loop sits in memory. Two builds use the same loop instructions. On misses, linear probing differs by 39% between those builds. Their times were compared only at 512 KiB and 2 MiB.
+
+- The out-of-order explanation above is an inference. No counter here measures misses in flight, and the control experiment used hits only.
 
 - The table is insert-only. The `keys[3]` test does not work if a key can be deleted.
 
-- The counters do not split the gain over linear probing between fewer branch misses and fewer cache lines.
-
-- The x86-64 SIMD path is AVX2. It was run on eight `m7i.4xlarge` instances. The times are in [RESULTS.md](RESULTS.md#x86-64).
+- The counters do not split the gain over linear probing between fewer branch mispredictions and fewer cache lines.
 
 ## Build
 
-The code uses the C++20 language. Clang compiles it. Meson, Ninja, and CMake are the build tools. On AArch64, Meson selects NEON. On x86-64, Meson selects AVX2.
+The code is C++20, built with Clang, Meson, Ninja, and CMake. Meson selects NEON on AArch64 and AVX2 on x86-64.
 
 ```sh
 CXX=clang++-22 meson setup build --buildtype=release
