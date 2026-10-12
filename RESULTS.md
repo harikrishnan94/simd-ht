@@ -2,7 +2,7 @@
 
 This page is the full record behind the [README](README.md). It covers five lookup designs for one hash table.
 
-It includes the CPU's counts of instructions, cycles, and wrong branch guesses. Those counts are the hardware counters. It includes every table size. It also records how the numbers were checked.
+It includes the hardware counters: instructions, cycles, and branch mispredictions. It includes every table size. It also records how the numbers were checked.
 
 The main run was on 2026-10-09. It used four AWS `m8g.4xlarge` instances in `ap-south-2a`. The CPU design is Arm Neoverse V2. Graviton4 is the AWS processor built from those cores.
 
@@ -20,43 +20,37 @@ A section that uses a different run says so.
 
 ## Setup
 
-All five designs use the same keys. They use the same hash, the same table sizes, and the same machines. Only the memory layout changes. The code that walks the table to find the key changes with the layout. That walk is the probe.
+All five designs use the same keys. They use the same hash, the same table sizes, and the same machines. Only the memory layout changes. The probe code changes with the layout.
 
 - The keys and the values are 64-bit integers. Key 0 is reserved. A slot that holds key 0 is empty.
 
-- The hash is computed in two steps. The first step XORs the two 32-bit halves of the key. MurmurHash3 is a known hash function. The last mixing step of a hash is called its final mix. The second step is MurmurHash3's final mix. That mix is called `fmix32`.
+- The hash is computed in two steps. The first step XORs the two 32-bit halves of the key. The second step is MurmurHash3's final mix, `fmix32`.
 
-- `bit_ceil(N)` rounds N up to a power of two. The table has `2 * bit_ceil(N)` slots for N keys. The load factor is the share of slots that hold a key. Here the load factor is exactly 0.5.
+- `bit_ceil(N)` rounds N up to a power of two. The table has `2 * bit_ceil(N)` slots for N keys. Here the load factor is exactly 0.5.
 
 - Each table holds `32 * N` bytes. The tables never delete a key. They never resize.
 
-- A KiB is 1,024 bytes. A MiB is 1,024 KiB. A GiB is 1,024 MiB. The tables hold from 2^10 keys to 2^28 keys. That range is 32 KiB to 8 GiB.
+- The tables hold from 2^10 keys to 2^28 keys. That range is 32 KiB to 8 GiB.
 
-- The stored keys start as the integers 1 through N. The last mixing step of a hash is called its finalizer. splitmix64 is a known hash. Its finalizer maps each of these keys to a different output.
+- The stored keys are the integers 1 through N, passed through the splitmix64 finalizer.
 
-- A function that maps each input to a different output is a bijection. This finalizer is a bijection. The keys are distinct. None of them is 0.
+- The finalizer is a bijection, so the keys are distinct. None of them is 0.
 
 - Absent keys are the integers N + 1 through 2N, passed through the same finalizer.
 
 - The query trace is the list of keys to look up. It holds N keys. The list is shuffled with a fixed seed. Either 0%, 50%, or 100% of those keys are in the table.
 
-- A lookup of a present key is a hit. A lookup of an absent key is a miss.
-
 - One timed pass looks up every key in the trace. It sums the values it finds. The timer covers the hash, the probe, the load of the value, and the sum. The timer does not cover building the table. The timer does not cover shuffling the trace.
 
 - After timing, the run checks the hit count and the checksum of the values. It fails if either check does not match.
 
-- The lookups do not depend on each other. The measured result is how many lookups finish per unit of time on one thread. That rate is called throughput. It is not the time for one lookup running alone. That single time is called latency.
+- The lookups do not depend on each other. The result is throughput on one thread, not the latency of one lookup running alone.
 
 - Google Benchmark is the timing library. It counts each lookup as one iteration. Each case warms up for 0.05 s. It then runs for at least 0.1 s. Each case runs five times.
 
 - The runs of every case are mixed into one random order. That mix is what "interleaved" means below.
 
-- SIMD means one instruction works on several keys at once.
-
-- The compiler must not turn a one-key lookup into a SIMD lookup on its own. That automatic rewrite is called vectorization. It is off for this project's code. Scalar means one key at a time. The scalar lookups stay scalar.
-
-L1, L2, and L3 in the table are CPU caches. L1 is the smallest, and it is private to one core. L3 is the largest, and the whole processor shares it. NEON is Arm's SIMD instruction set. xsimd is the library the measured binary used to call NEON.
+- Automatic vectorization is off for this project's code, so the scalar lookups stay scalar.
 
 | | |
 | --- | --- |
@@ -68,9 +62,9 @@ L1, L2, and L3 in the table are CPU caches. L1 is the smallest, and it is privat
 
 The main case below is the 8 GiB table. It is more than 200 times the size of the L3 cache.
 
-A vector type holds several keys in one variable. The measured binary called NEON through xsimd 14.3.0. The current source uses only the vector types built into Clang.
+The measured binary called NEON through xsimd 14.3.0. The current source uses only the vector types built into Clang.
 
-Disassembly is the compiled instructions, written out one by one. In that listing, the timed loops match between the measured binary and a build of the current source. The addresses differ. The untimed loop that builds the table also differs. That loop now calls a shared function to insert a key. The call passes two more arguments.
+In the disassembly, the timed loops match between the measured binary and a build of the current source. The addresses differ. The untimed loop that builds the table also differs. That loop now calls a shared function to insert a key. The call passes two more arguments.
 
 A row is one table size together with one hit rate. The cases were split across the instances by row. Every design in a row ran on the same machine. Those runs were interleaved.
 
@@ -85,17 +79,17 @@ An `m8g.4xlarge` uses part of a larger processor. Other virtual machines can sha
 
 ## The five designs
 
-The CPU loads memory in blocks of 64 bytes. A block of that size is a cache line. In the tables, a line means one cache line.
+In the tables, a line means one 64-byte cache line.
 
 Steps 2 to 5 store 4 keys and then 4 values in one group. The group is 64 bytes. It fills one cache line. The four slots are lanes. The lane numbers are 0, 1, 2, and 3.
 
-A mask is a bit pattern that records which lanes matched the search key. Step 4 keeps one bit for each lane. Step 5 keeps both compare results in one mask. Scalar means the lookup compares one key at a time.
+Step 4 keeps one mask bit for each lane. Step 5 keeps both compare results in one mask.
 
 Each row below is one design. The table is 8 GiB. Every query key is absent. All five designs ran in one interleaved benchmark. The times come from that run.
 
 A cell is one slot that holds a key and its value. The first design starts at the cell the hash selects. It then tries the next cell. It stops when it finds the key or an empty cell. That design is linear probing. It is step 1.
 
-A branch misprediction is a wrong guess about which way a branch will go. Instruction counts, cycle counts, and branch mispredictions come from a separate counter run. Cache lines and key compares come from replaying the lookups. Every column is the count per lookup.
+Instruction counts, cycle counts, and branch mispredictions come from a separate counter run. Cache lines and key compares come from replaying the lookups. Every column is the count per lookup.
 
 | Step | Design | Lines | Key compares | Branch mispredictions | Instructions | Cycles | ns |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -143,7 +137,7 @@ One 64-byte group per cache line
   start at group  (hash & (capacity - 1)) / 4,  then try the next group
 ```
 
-The grouped layout puts four keys and their values in one group. The group starts at the beginning of a cache line. A start on that boundary is called aligned.
+The grouped layout puts four keys and their values in one group. The group starts at the beginning of a cache line.
 
 Both layouts use 16 bytes per slot. The same hash bits select the slot in either layout. Those bits select the same cache line in both layouts.
 
@@ -181,9 +175,9 @@ The SIMD lookups use the table built by step 2. That table fills lanes starting 
 
 Two 128-bit NEON compares test all four keys against the search key. Each compare sets every bit of a 64-bit lane, or it sets none. One branch then decides for all four keys.
 
-The first SIMD lookup moved each 64-bit compare result into a normal integer register, also called a general-purpose register. `extr` pulls bits out of a register. `and` keeps selected bits. `bfi` inserts bits. `extr`, `and`, and `bfi` built the 4-bit mask. They took 8 instructions, and they finished before the branch.
+Step 4 moves each 64-bit compare result into a general-purpose register. `extr`, `and`, and `bfi` build the 4-bit mask. They take 8 instructions, and they finish before the branch.
 
-It then repeated the work, with two more compares, to look for an empty lane.
+It then repeats the work, with two more compares, to look for an empty lane.
 
 Mispredictions fall from 1.30 per miss to 0.25. Instructions rise from 34.15 to 45.17. A miss takes 28.46 ns, against 26.87 ns for step 3. A hit takes 22.69 ns, the slowest hit time of the five designs.
 
@@ -195,13 +189,13 @@ Mispredictions fall from 1.30 per miss to 0.25. Instructions rise from 34.15 to 
 
 The lookup narrows both compare results into one 64-bit register. `uzp1` keeps one 32-bit half of each compare result. `xtn` narrows that half to one 16-bit field per key. The lookup then branches once.
 
-Leading zeros are the zero bits before the first 1 bit. A match in lane 0 leaves 48 leading zeros. Each later lane leaves 16 fewer than the lane before it. For lane `i`, the code writes the count as `48 - 16 * i`.
+A match in lane 0 leaves 48 leading zeros. Each later lane leaves 16 fewer than the lane before it. For lane `i`, the code writes the count as `48 - 16 * i`.
 
 The values sit in order, from value 0 through value 3. Each value occupies 8 bytes. The compare result uses 16 bits per key. The code divides the leading-zero count by 2 and uses the result as a number of bytes.
 
 The load starts at value 3. It moves back by that byte count. It arrives at value `i`.
 
-`clz` counts the leading zeros. `sub` subtracts. `ldr` loads the bytes at an address. A hit uses those three instructions, plus one `add`. The `add` recomputes the group address.
+A hit uses `clz`, `sub`, and `ldr`, plus one `add`. The `add` recomputes the group address.
 
 2. The filled lanes always come first. Insertion takes the lowest empty lane. Nothing is deleted. A group with any free slot therefore has an empty lane 3.
 
@@ -235,7 +229,7 @@ A miss takes 14.57 ns. That is 2.5 times faster than linear probing.
 
 The lookups do not depend on each other. While one lookup waits for memory, the core executes later lookups. It also starts their loads. It can run only a limited distance past the oldest lookup that is still unfinished. That limit is a fixed number of instructions. The name for the limit is the out-of-order window.
 
-A cache miss is a load that does not find its data in the cache. Fewer instructions per lookup let more lookups fit in that window. More cache misses fit in it as well. A miss in flight is a cache miss that has started and has not finished.
+Fewer instructions per lookup let more lookups fit in that window. More cache misses fit in it as well. A miss in flight is a cache miss that has started and has not finished.
 
 A mispredicted branch throws away the work after it. That includes loads already started for later lookups.
 
@@ -247,7 +241,7 @@ This matches three results.
 
 3. A control experiment added `and` instructions to linear probing. The added instructions sit before the first load of a key. Nothing uses their results. They add no memory access. They add no branch. Nothing waits for them.
 
-The control experiment ran on 2026-10-08, on the shared `m8g.24xlarge` development machine. Load average is the Unix measure of how busy the machine is. At the start it was 0.93. Every query is a hit. Each case ran five times, in a random interleave.
+The control experiment ran on 2026-10-08, on the shared `m8g.24xlarge` development machine. At the start, the load average was 0.93. Every query is a hit. Each case ran five times, in a random interleave.
 
 The table shows the median nanoseconds per lookup. It also shows the change against linear probing. "Separate" means the ranges of the five runs do not overlap. "Overlap" means those ranges do overlap.
 
@@ -280,7 +274,7 @@ Steps 1, 3, and 5 need 43 to 45 cycles per hit. Step 5 mispredicts a tenth as of
 
 The current source contains three of the designs. They are linear probing (step 1), the cyclic scalar scan (step 3), and SIMD (step 5). The times fall into three ranges.
 
-**32 KiB and 128 KiB.** The branch predictor is the part of the core that guesses which way a branch will go. The query trace holds only 1,024 keys, or only 4,096 keys. The trace repeats on every pass. The predictor learns that repeated list.
+**32 KiB and 128 KiB.** The query trace holds only 1,024 keys, or only 4,096 keys. The trace repeats on every pass. The branch predictor learns that repeated list.
 
 At these sizes, linear probing mispredicts about 0.001 times per miss. At 2 MiB it mispredicts more than 1.2 times per miss. At 32 KiB and at 128 KiB, the bytes the lookup needs are already in a cache. Mispredictions are near zero as well. The instruction count decides the time.
 
@@ -337,7 +331,7 @@ The table is the median nanoseconds per lookup, over five runs. Bold marks the l
 | 2^28 | 8 GiB | 50% | 40.82 | 26.39 | **19.36** |
 | 2^28 | 8 GiB | 100% | 15.74 | 16.08 | **15.30** |
 
-Run-to-run variation is the spread of the five times divided by their average. That spread is the standard deviation. The table writes that ratio as a percent. That percent is the coefficient of variation.
+Run-to-run variation is the coefficient of variation of the five times: their standard deviation divided by their mean, as a percent.
 
 The maximum here is 6.83%. Four cases exceed 5%. All four are at 512 KiB or at 32 MiB.
 
@@ -399,15 +393,13 @@ The measured binary's 512 KiB times on this machine match the dedicated instance
 
 Another build of the same code can differ by 39% for linear probing. SIMD misses rarely mispredict. Their time changed by about 7%. At 2 MiB the two builds agree within 0.4%.
 
-Earlier versions of this page gave 0.001, 0.003, 1.00, and 1.18 branch misses for these four sizes. Those figures came from a run whose raw output was not kept. The measurements above replace them.
-
 ## x86-64
 
 AVX2 is the x86-64 SIMD path. Its lookup compares a group with one 256-bit compare, the instruction `vpcmpeqq`. `vmovmskpd` moves the compare result to a general-purpose register. The lookup uses the same test of lane 3.
 
-It keeps the probe position as a byte offset. Multiplying an index while forming an address is called scaling. x86 addressing cannot scale a group index by 64.
+It keeps the probe position as a byte offset, because x86 addressing cannot scale a group index by 64.
 
-The NEON lookup keeps the group index. AArch64 is the 64-bit Arm instruction set. On AArch64 the address add can shift the index left by 6 bits. That shift is written `lsl #6`. It multiplies the index by 64.
+The NEON lookup keeps the group index. On AArch64 the address add can shift the index left by 6 bits, written `lsl #6`.
 
 In the x86-64 disassembly, each further group costs 9 instructions with the byte offset. A group index costs 13 instructions.
 
@@ -535,9 +527,9 @@ Correctness:
 
 - They also cover keys with high bits set. They cover a second insert of a key that is already present. They cover the limits on table size, and an empty table. They check that the first linear-probing cell starts on a 64-byte boundary.
 
-- One tool reports invalid memory access. That tool is AddressSanitizer. Another tool reports undefined behavior. That tool is UndefinedBehaviorSanitizer. The same tests pass under both tools.
+- The same tests pass under AddressSanitizer and UndefinedBehaviorSanitizer.
 
-- A second test binary runs the same checks on the SIMD lookup for the other instruction set. The SIMD code for one instruction set is called a backend. This lookup is the other backend. The host CPU is the CPU that runs the test. The lookup is compiled for that CPU. This works because both backends use only Clang's vector types.
+- A second test binary runs the same checks on the other backend's SIMD lookup, compiled for the CPU that runs the test. This works because both backends use only Clang's vector types.
 
 - After timing, every benchmark run checks its hit count and its value checksum. It fails on a mismatch.
 
@@ -645,11 +637,11 @@ These experiments ran on the shared `m8g.24xlarge` development machine. Their ti
 
 - Cheaper group address in the cyclic scalar scan: its probe position is kept as a cell index. Clang can then address a group with one `add ..., lsl #4`. The other form starts with `lsr`, a shift of bits to the right. It then does `add ..., lsl #6`. In a paired test at 2^28 keys, this saved about 1 ns per lookup. The same run held the control experiment above.
 
-- Two SIMD variants were slower. `countl_zero` counts leading zero bits. One variant indexed the values with `3 - countl_zero / 16`. A hit took 33 instructions.
+- Two SIMD variants were slower. One variant indexed the values with `3 - countl_zero / 16`. A hit took 33 instructions.
 
-- Clang widened a signed number by copying its sign bit. That widening is a sign extension. Clang also kept a test that the pointer is not null. That test is a null check.
+- In that variant, Clang added a sign extension, and it kept a null check on the pointer.
 
-- `select` picks one of two values. `reduce_add` adds a vector's lanes into one number. The other variant used both, from xsimd, to compute the value offset, and it needed two 128-bit constants. A vector register is where those SIMD values sit. A function call on AArch64 does not keep the vector registers. The constants were loaded from the stack again on every probe.
+- The other variant used xsimd's `select` and `reduce_add` to compute the value offset, and it needed two 128-bit constants. A function call on AArch64 does not keep the vector registers. The constants were loaded from the stack again on every probe.
 
 ### Benchmark names
 
