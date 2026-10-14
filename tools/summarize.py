@@ -5,7 +5,9 @@
 Several files may hold disjoint cases, for example when sizes ran on different machines.
 The sweep table shows the median time per lookup over all repetitions of each case.
 The ring table shows the AMAC ring sizes, when the files hold that sweep.
+The factor table divides the medians of the sweep table: the gain from AMAC, and the lead of SIMD over linear probing.
 The counter table shows per-lookup hardware counts from OA_PMU=1 runs.
+The counter change table shows how the counts move with AMAC.
 Kernels that a file does not hold are left out.
 """
 
@@ -80,12 +82,52 @@ def sweep_table(rows):
     return lines
 
 
+def median_time(rows, case):
+    return statistics.median(r["real_time"] for r in rows[case])
+
+
+def factor_table(rows):
+    """Quotients of medians. Gain: time per key over time with AMAC. Lead: linear probing over SIMD.
+
+    The last column is the best AMAC time over the best one-at-a-time time; above 1, AMAC loses the row.
+    """
+    linear, cyclic, simd = (name for name, _ in DESIGNS)
+    amac = {name: f"{name}_AMAC{AMAC_RING}" for name, _ in DESIGNS}
+    header = (
+        "| Keys | Table | Hits | AMAC gain, linear probing | AMAC gain, cyclic scalar | AMAC gain, SIMD "
+        "| SIMD lead, one at a time | SIMD lead, AMAC | SIMD AMAC over linear probing "
+        "| Best AMAC over best one at a time |"
+    )
+    lines = [header, "| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |"]
+    for keys in sorted({keys for _, keys, _ in rows}):
+        for hits in HIT_RATES:
+            if not all((name, keys, hits) in rows for name in (linear, cyclic, simd, *amac.values())):
+                continue
+
+            def time(name):
+                return median_time(rows, (name, keys, hits))
+
+            factors = [
+                time(linear) / time(amac[linear]),
+                time(cyclic) / time(amac[cyclic]),
+                time(simd) / time(amac[simd]),
+                time(linear) / time(simd),
+                time(amac[linear]) / time(amac[simd]),
+                time(linear) / time(amac[simd]),
+                min(time(amac[name]) for name in (linear, cyclic, simd)) / min(time(name) for name in (linear, cyclic, simd)),
+            ]
+            cells = [f"2^{keys.bit_length() - 1}", table_size(keys), f"{hits}%"] + [f"{factor:.2f}" for factor in factors]
+            lines.append("| " + " | ".join(cells) + " |")
+    return lines if len(lines) > 2 else []
+
+
 def ring_table(rows):
     columns = [("", "No ring")] + [(f"_AMAC{size}", f"Ring {size}") for size in RING_SIZES]
     lines = [
         "| Keys | Hits | Design | " + " | ".join(label for _, label in columns) + " |",
         "| --- | ---: | --- |" + " ---: |" * len(columns),
     ]
+    gaps = []
     for keys in RING_KEYS:
         for hits in HIT_RATES:
             for name, label in DESIGNS:
@@ -96,7 +138,12 @@ def ring_table(rows):
                 cells = [f"2^{keys.bit_length() - 1}", f"{hits}%", label]
                 cells += [f"**{m:.2f}**" if m == min(medians) else f"{m:.2f}" for m in medians]
                 lines.append("| " + " | ".join(cells) + " |")
-    return lines if len(lines) > 2 else []
+                ring_32 = medians[1 + RING_SIZES.index(AMAC_RING)]
+                gaps.append((100 * (ring_32 / min(medians[1:]) - 1), f"2^{keys.bit_length() - 1} keys, {hits}% hits, {label}"))
+    if len(lines) <= 2:
+        return []
+    gap, row = max(gaps)
+    return lines + ["", f"Largest gap between ring {AMAC_RING} and the best ring: {gap:.1f}% ({row})."]
 
 
 def spread_report(rows):
@@ -128,6 +175,28 @@ def counter_table(rows):
     return lines
 
 
+def counter_change_table(rows):
+    lines = [
+        "| Keys | Hits | Design | Instructions | Cycles | Branch misses |",
+        "| --- | ---: | --- | ---: | ---: | ---: |",
+    ]
+    for keys in sorted({keys for _, keys, _ in rows}):
+        for hits in HIT_RATES:
+            for name, label in DESIGNS:
+                single, amac = rows.get((name, keys, hits)), rows.get((f"{name}_AMAC{AMAC_RING}", keys, hits))
+                if single is None or amac is None:
+                    continue
+
+                def change(field):
+                    return 100 * (statistics.median(r[field] for r in amac) / statistics.median(r[field] for r in single) - 1)
+
+                lines.append(
+                    f"| 2^{keys.bit_length() - 1} | {hits}% | {label} | {change('pmu_instructions'):+.0f}% "
+                    f"| {change('pmu_cycles'):+.0f}% | {change('pmu_branch_misses'):+.0f}% |"
+                )
+    return lines if len(lines) > 2 else []
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("sweep", nargs="+")
@@ -138,6 +207,9 @@ def main():
     print(f"{len(rows)} cases, repetitions per case: {sorted(repetitions)}. Compiler: {context['compiler']}.")
     print(f"SIMD target: {context['simd_target']}. Median ns per lookup; bold is the lowest in its row.\n")
     print("\n".join(sweep_table(rows)))
+    if factors := factor_table(rows):
+        print("\nFactors from the medians above.\n")
+        print("\n".join(factors))
     if ring := ring_table(rows):
         print("\nAMAC ring size, median ns per lookup.\n")
         print("\n".join(ring))
@@ -147,6 +219,9 @@ def main():
         _, counter_rows = load(args.counters)
         print()
         print("\n".join(counter_table(counter_rows)))
+        if change := counter_change_table(counter_rows):
+            print("\nChange in the counts with AMAC, per design.\n")
+            print("\n".join(change))
 
 
 if __name__ == "__main__":
