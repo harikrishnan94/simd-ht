@@ -165,6 +165,58 @@ inline void insertIntoGroups(std::vector<Group> & groups, size_t & key_count, Ke
     }
 }
 
+/// Compares the four keys of a group with one key. A key occupies at most one slot, so at most one lane matches.
+#if defined(SIMD_HT_NEON64)
+using Needle = Key __attribute__((vector_size(16), aligned(16), may_alias));
+using LaneMatches = uint64_t;
+
+[[gnu::always_inline]] inline Needle broadcastKey(Key key)
+{
+    return {key, key};
+}
+
+/// Lane i's comparison fills bits [16 * i, 16 * i + 16).
+[[gnu::always_inline]] inline LaneMatches matchLanes(const Group & group, Needle needle)
+{
+    using Words = uint32_t __attribute__((vector_size(16)));
+    using Fields = uint16_t __attribute__((vector_size(8)));
+    const auto low = std::bit_cast<Words>(*reinterpret_cast<const Needle *>(group.keys) == needle);
+    const auto high = std::bit_cast<Words>(*reinterpret_cast<const Needle *>(group.keys + 2) == needle);
+    const Words even = __builtin_shufflevector(low, high, 0, 2, 4, 6);
+    return std::bit_cast<uint64_t>(__builtin_convertvector(even, Fields));
+}
+
+/// A match in lane i has 48 - 16 * i leading zeros.
+/// Indexing values by 3 - countl_zero / 16 instead adds a sign extension and a null check.
+[[gnu::always_inline]] inline const Value * matchedValue(const Group & group, LaneMatches matches)
+{
+    return reinterpret_cast<const Value *>(
+        reinterpret_cast<const std::byte *>(&group.values[3]) - static_cast<size_t>(std::countl_zero(matches)) / 2);
+}
+#else
+using Needle = Key __attribute__((vector_size(32), aligned(32), may_alias));
+using LaneMatches = unsigned;
+
+[[gnu::always_inline]] inline Needle broadcastKey(Key key)
+{
+    return {key, key, key, key};
+}
+
+/// Bit i is set when lane i matches.
+[[gnu::always_inline]] inline LaneMatches matchLanes(const Group & group, Needle needle)
+{
+    using LaneBits = bool __attribute__((ext_vector_type(4)));
+    const auto equal = __builtin_convertvector(*reinterpret_cast<const Needle *>(group.keys) == needle, LaneBits);
+    // Bits 4 to 7 of a four-lane bool vector are padding, so std::bit_cast to a byte gives an indeterminate value.
+    return unsigned{equal[0]} | unsigned{equal[1]} << 1 | unsigned{equal[2]} << 2 | unsigned{equal[3]} << 3;
+}
+
+[[gnu::always_inline]] inline const Value * matchedValue(const Group & group, LaneMatches matches)
+{
+    return &group.values[std::countr_zero(matches)];
+}
+#endif
+
 class GroupedTable
 {
 public:
@@ -181,34 +233,20 @@ public:
         if (key == 0)
             return nullptr;
         // Insertion fills the lowest empty lane and never deletes, so a lookup stops at the first group with lane 3 empty.
+        const Needle needle = broadcastKey(key);
 #if defined(SIMD_HT_NEON64)
-        using KeyPair = Key __attribute__((vector_size(16), aligned(16), may_alias));
-        using Words = uint32_t __attribute__((vector_size(16)));
-        using Fields = uint16_t __attribute__((vector_size(8)));
-        const KeyPair needle = {key, key};
         const size_t group_mask = cell_mask >> 2;
         size_t pos = (hashKey(key) & cell_mask) >> 2;
         for (;;)
         {
             const auto & group = groups[pos];
-            const auto low = std::bit_cast<Words>(*reinterpret_cast<const KeyPair *>(group.keys) == needle);
-            const auto high = std::bit_cast<Words>(*reinterpret_cast<const KeyPair *>(group.keys + 2) == needle);
-            // Lane i's comparison fills bits [16 * i, 16 * i + 16).
-            const Words even = __builtin_shufflevector(low, high, 0, 2, 4, 6);
-            const uint64_t matches = std::bit_cast<uint64_t>(__builtin_convertvector(even, Fields));
-            // A key occupies at most one slot, so a match in lane i has 48 - 16 * i leading zeros.
-            // Indexing values by 3 - countl_zero / 16 instead adds a sign extension and a null check.
-            if (matches)
-                return reinterpret_cast<const Value *>(
-                    reinterpret_cast<const std::byte *>(&group.values[3]) - static_cast<size_t>(std::countl_zero(matches)) / 2);
+            if (const LaneMatches matches = matchLanes(group, needle))
+                return matchedValue(group, matches);
             if (group.keys[3] == 0)
                 return nullptr;
             pos = (pos + 1) & group_mask;
         }
 #else
-        using KeyQuad = Key __attribute__((vector_size(32), aligned(32), may_alias));
-        using LaneBits = bool __attribute__((ext_vector_type(4)));
-        const KeyQuad needle = {key, key, key, key};
         // x86 addressing cannot scale a group index by 64, so keep the probe position in bytes.
         // Widen before shifting: a 32-bit shift drops hash bits 28 to 31, which tables of 2^27 or more groups use.
         const size_t byte_mask = (groups.size() - 1) * sizeof(Group);
@@ -217,11 +255,8 @@ public:
         for (;;)
         {
             const auto & group = *reinterpret_cast<const Group *>(base + offset);
-            const auto equal = __builtin_convertvector(*reinterpret_cast<const KeyQuad *>(group.keys) == needle, LaneBits);
-            // Bits 4 to 7 of a four-lane bool vector are padding, so std::bit_cast to a byte gives an indeterminate value.
-            const unsigned matches = unsigned{equal[0]} | unsigned{equal[1]} << 1 | unsigned{equal[2]} << 2 | unsigned{equal[3]} << 3;
-            if (matches)
-                return &group.values[std::countr_zero(matches)];
+            if (const LaneMatches matches = matchLanes(group, needle))
+                return matchedValue(group, matches);
             if (group.keys[3] == 0)
                 return nullptr;
             offset = (offset + sizeof(Group)) & byte_mask;
