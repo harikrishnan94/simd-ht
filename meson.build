@@ -57,7 +57,7 @@ table_dep = declare_dependency(
 benchmark_source = files('src/benchmark.cpp')
 test_source = files('tests/hash_tables_test.cpp')
 probe_stats_source = files('tools/probe_stats.cpp')
-project_sources = benchmark_source + test_source + probe_stats_source + files('src/hash_tables.hpp', 'src/perf_counters.hpp', 'src/workload.hpp')
+project_sources = benchmark_source + test_source + probe_stats_source + files('src/amac.hpp', 'src/hash_tables.hpp', 'src/perf_counters.hpp', 'src/workload.hpp')
 
 oa_bench = executable('oa_bench', benchmark_source, dependencies: [table_dep, benchmark_dep])
 oa_tests = executable('oa_tests', test_source, dependencies: table_dep)

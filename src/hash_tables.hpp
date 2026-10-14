@@ -1,12 +1,18 @@
 #pragma once
 
+#include "amac.hpp"
+
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <new>
+#include <span>
 #include <stdexcept>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #if !defined(SIMD_HT_AVX2) && !defined(SIMD_HT_NEON64)
@@ -69,6 +75,99 @@ struct CacheLineAllocator
     bool operator==(const CacheLineAllocator &) const = default;
 };
 
+/// An on_result(value) callback needs no row, so the ring stores none. Clang does not remove the dead row stores itself.
+template <class OnResult>
+inline constexpr bool amac_tracks_rows = std::is_invocable_v<OnResult &, size_t, const Value *>;
+
+template <class OnResult>
+[[gnu::always_inline]] inline void callOnResult(OnResult & on_result, size_t row, const Value * value)
+{
+    if constexpr (amac_tracks_rows<OnResult>)
+        on_result(row, value);
+    else
+        on_result(value);
+}
+
+/// Each slot holds the line it reads next, its key and, if tracked, its row. A null position marks an inactive slot.
+template <class Position, size_t ring_size, bool track_rows>
+struct AmacRing
+{
+    std::array<const Position *, ring_size> pos{};
+    std::array<Key, ring_size> key{};
+    std::array<size_t, track_rows ? ring_size : 0> rows{};
+
+    bool isActive(size_t s) const { return pos[s] != nullptr; }
+    void deactivate(size_t s) { pos[s] = nullptr; }
+
+    size_t rowOf(size_t s) const
+    {
+        if constexpr (track_rows)
+            return rows[s];
+        else
+            return 0;
+    }
+
+    void setRow(size_t s, size_t row)
+    {
+        if constexpr (track_rows)
+            rows[s] = row;
+    }
+};
+
+/// A visit reads the rest of one cache line, so visits per lookup are the lines the lookup touches.
+template <size_t ring_size_, class OnResult>
+struct LinearAmacPolicy
+{
+    static constexpr size_t ring_size = ring_size_;
+    using Ring = AmacRing<Cell, ring_size, amac_tracks_rows<OnResult>>;
+
+    std::span<const Key> keys;
+    const Cell * cells = nullptr;
+    const Cell * cells_end = nullptr;
+    size_t cell_mask = 0;
+    OnResult on_result;
+
+    bool start(Ring & ring, size_t s, size_t row)
+    {
+        const Key key = keys[row];
+        if (key == 0)
+        {
+            callOnResult(on_result, row, nullptr);
+            return false;
+        }
+        const Cell * home = cells + (hashKey(key) & cell_mask);
+        ring.pos[s] = home;
+        ring.key[s] = key;
+        ring.setRow(s, row);
+        prefetchLine(home);
+        return true;
+    }
+
+    AmacStep step(Ring & ring, size_t s)
+    {
+        const Cell * cell = ring.pos[s];
+        const Key key = ring.key[s];
+        do
+        {
+            if (cell->key == key)
+            {
+                callOnResult(on_result, ring.rowOf(s), &cell->value);
+                return AmacStep::Done;
+            }
+            if (cell->key == 0)
+            {
+                callOnResult(on_result, ring.rowOf(s), nullptr);
+                return AmacStep::Done;
+            }
+            if (++cell == cells_end)
+                cell = cells;
+        } while (reinterpret_cast<uintptr_t>(cell) % 64 != 0);
+        ring.pos[s] = cell;
+        prefetchLine(cell);
+        return AmacStep::Advance;
+    }
+};
+
 class ScalarTable
 {
 public:
@@ -115,6 +214,15 @@ public:
             pos = (pos + 1) & cell_mask;
         }
         return &cells[pos].value;
+    }
+
+    /// Calls on_result(row, find(keys[row])) once per row, in completion order. on_result(find(keys[row])) is also accepted.
+    template <size_t ring_size, class OnResult>
+    void findAmac(std::span<const Key> keys, OnResult on_result) const
+    {
+        amacRun(
+            LinearAmacPolicy<ring_size, OnResult>{keys, cells.data(), cells.data() + cells.size(), cell_mask, std::move(on_result)},
+            keys.size());
     }
 
     size_t size() const { return key_count; }
@@ -217,6 +325,56 @@ using LaneMatches = unsigned;
 }
 #endif
 
+/// A visit compares the four keys of one group, as findSimd does.
+template <size_t ring_size_, class OnResult>
+struct SimdAmacPolicy
+{
+    static constexpr size_t ring_size = ring_size_;
+    using Ring = AmacRing<Group, ring_size, amac_tracks_rows<OnResult>>;
+
+    std::span<const Key> keys;
+    const Group * groups = nullptr;
+    const Group * groups_end = nullptr;
+    size_t cell_mask = 0;
+    OnResult on_result;
+
+    bool start(Ring & ring, size_t s, size_t row)
+    {
+        const Key key = keys[row];
+        if (key == 0)
+        {
+            callOnResult(on_result, row, nullptr);
+            return false;
+        }
+        const Group * home = groups + ((hashKey(key) & cell_mask) >> 2);
+        ring.pos[s] = home;
+        ring.key[s] = key;
+        ring.setRow(s, row);
+        prefetchLine(home);
+        return true;
+    }
+
+    AmacStep step(Ring & ring, size_t s)
+    {
+        const Group * group = ring.pos[s];
+        if (const LaneMatches matches = matchLanes(*group, broadcastKey(ring.key[s])))
+        {
+            callOnResult(on_result, ring.rowOf(s), matchedValue(*group, matches));
+            return AmacStep::Done;
+        }
+        if (group->keys[3] == 0)
+        {
+            callOnResult(on_result, ring.rowOf(s), nullptr);
+            return AmacStep::Done;
+        }
+        if (++group == groups_end)
+            group = groups;
+        ring.pos[s] = group;
+        prefetchLine(group);
+        return AmacStep::Advance;
+    }
+};
+
 class GroupedTable
 {
 public:
@@ -264,6 +422,15 @@ public:
 #endif
     }
 
+    /// Calls on_result(row, findSimd(keys[row])) once per row, in completion order. on_result(findSimd(keys[row])) is also accepted.
+    template <size_t ring_size, class OnResult>
+    void findSimdAmac(std::span<const Key> keys, OnResult on_result) const
+    {
+        amacRun(
+            SimdAmacPolicy<ring_size, OnResult>{keys, groups.data(), groups.data() + groups.size(), cell_mask, std::move(on_result)},
+            keys.size());
+    }
+
     size_t size() const { return key_count; }
     size_t capacity() const { return groups.size() * 4; }
     size_t allocatedBytes() const { return groups.size() * sizeof(Group); }
@@ -272,6 +439,68 @@ private:
     std::vector<Group> groups;
     size_t cell_mask;
     size_t key_count = 0;
+};
+
+/// A visit scans one group from the key's home lane, as findScalar does. Each group of a walk starts at that lane.
+template <size_t ring_size_, class OnResult>
+struct CyclicAmacPolicy
+{
+    static constexpr size_t ring_size = ring_size_;
+
+    struct Ring : AmacRing<Group, ring_size, amac_tracks_rows<OnResult>>
+    {
+        std::array<uint8_t, ring_size> lane{};
+    };
+
+    std::span<const Key> keys;
+    const Group * groups = nullptr;
+    const Group * groups_end = nullptr;
+    size_t cell_mask = 0;
+    OnResult on_result;
+
+    bool start(Ring & ring, size_t s, size_t row)
+    {
+        const Key key = keys[row];
+        if (key == 0)
+        {
+            callOnResult(on_result, row, nullptr);
+            return false;
+        }
+        const uint32_t hash = hashKey(key);
+        const Group * home = groups + ((hash & cell_mask) >> 2);
+        ring.pos[s] = home;
+        ring.key[s] = key;
+        ring.setRow(s, row);
+        ring.lane[s] = static_cast<uint8_t>(hash & 3);
+        prefetchLine(home);
+        return true;
+    }
+
+    AmacStep step(Ring & ring, size_t s)
+    {
+        const Group * group = ring.pos[s];
+        const Key key = ring.key[s];
+        const size_t home_lane = ring.lane[s];
+        for (size_t offset = 0; offset < 4; ++offset)
+        {
+            const size_t lane = (home_lane + offset) & 3;
+            if (group->keys[lane] == key)
+            {
+                callOnResult(on_result, ring.rowOf(s), &group->values[lane]);
+                return AmacStep::Done;
+            }
+            if (group->keys[lane] == 0)
+            {
+                callOnResult(on_result, ring.rowOf(s), nullptr);
+                return AmacStep::Done;
+            }
+        }
+        if (++group == groups_end)
+            group = groups;
+        ring.pos[s] = group;
+        prefetchLine(group);
+        return AmacStep::Advance;
+    }
 };
 
 class CyclicGroupedTable
@@ -306,6 +535,15 @@ public:
             }
             pos = (pos + 4) & cell_mask;
         }
+    }
+
+    /// Calls on_result(row, findScalar(keys[row])) once per row, in completion order. on_result(findScalar(keys[row])) is also accepted.
+    template <size_t ring_size, class OnResult>
+    void findScalarAmac(std::span<const Key> keys, OnResult on_result) const
+    {
+        amacRun(
+            CyclicAmacPolicy<ring_size, OnResult>{keys, groups.data(), groups.data() + groups.size(), cell_mask, std::move(on_result)},
+            keys.size());
     }
 
     size_t size() const { return key_count; }

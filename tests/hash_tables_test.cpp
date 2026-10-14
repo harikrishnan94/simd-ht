@@ -1,14 +1,18 @@
 #include "hash_tables.hpp"
 #include "workload.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
+#include <functional>
+#include <initializer_list>
 #include <iostream>
 #include <limits>
 #include <random>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -65,18 +69,106 @@ void checkLookup(
     check(cyclic.findScalar(key), "Scalar cyclic grouped");
 }
 
+// A batched lookup must call back once per row, with the pointer the per-key lookup returns.
+template <class PerKey, class Batched>
+void checkBatched(PerKey per_key, Batched batched, std::span<const Key> keys, std::string_view name)
+{
+    std::vector<const Value *> results(keys.size());
+    std::vector<unsigned> calls(keys.size());
+    batched(
+        keys,
+        [&](size_t row, const Value * value)
+        {
+            require(row < keys.size(), std::string(name) + " batched lookup returned a row outside the batch");
+            ++calls[row];
+            results[row] = value;
+        });
+    std::vector<const Value *> expected;
+    for (size_t row = 0; row < keys.size(); ++row)
+    {
+        require(calls[row] == 1, std::string(name) + " batched lookup did not return exactly one result per row");
+        require(results[row] == per_key(keys[row]), std::string(name) + " batched lookup differs from the per-key lookup");
+        expected.push_back(results[row]);
+    }
+
+    // Without a row in the callback, the ring stores none. The results then come in completion order.
+    std::vector<const Value *> unordered;
+    batched(keys, [&](const Value * value) { unordered.push_back(value); });
+    std::sort(expected.begin(), expected.end(), std::less<const Value *>());
+    std::sort(unordered.begin(), unordered.end(), std::less<const Value *>());
+    require(unordered == expected, std::string(name) + " batched lookup without rows differs from the per-key lookup");
+}
+
+template <size_t ring_size>
+void checkBatch(const ScalarTable & table, std::span<const Key> keys)
+{
+    checkBatched(
+        [&](Key key) { return table.find(key); },
+        [&](std::span<const Key> batch, auto on_result) { table.findAmac<ring_size>(batch, on_result); },
+        keys,
+        "Scalar");
+}
+
+template <size_t ring_size>
+void checkBatch(const GroupedTable & table, std::span<const Key> keys)
+{
+    checkBatched(
+        [&](Key key) { return table.findSimd(key); },
+        [&](std::span<const Key> batch, auto on_result) { table.findSimdAmac<ring_size>(batch, on_result); },
+        keys,
+        "SIMD grouped");
+}
+
+template <size_t ring_size>
+void checkBatch(const CyclicGroupedTable & table, std::span<const Key> keys)
+{
+    checkBatched(
+        [&](Key key) { return table.findScalar(key); },
+        [&](std::span<const Key> batch, auto on_result) { table.findScalarAmac<ring_size>(batch, on_result); },
+        keys,
+        "Scalar cyclic grouped");
+}
+
+// Ring sizes 1 and 4 keep the ring smaller than most batches. The others are the sizes the benchmark uses.
+template <class Table>
+void checkBatches(const Table & table, std::span<const Key> keys)
+{
+    checkBatch<1>(table, keys);
+    checkBatch<4>(table, keys);
+    checkBatch<8>(table, keys);
+    checkBatch<16>(table, keys);
+    checkBatch<32>(table, keys);
+    checkBatch<64>(table, keys);
+}
+
+void checkBatches(const ScalarTable & scalar, const GroupedTable & grouped, const CyclicGroupedTable & cyclic, std::span<const Key> keys)
+{
+    checkBatches(scalar, keys);
+    checkBatches(grouped, keys);
+    checkBatches(cyclic, keys);
+}
+
+// Looks up every stored key, the empty key and the absent keys in one batch.
 void checkContents(
     const ScalarTable & scalar,
     const GroupedTable & grouped,
     const CyclicGroupedTable & cyclic,
-    const std::unordered_map<Key, Value> & expected)
+    const std::unordered_map<Key, Value> & expected,
+    std::initializer_list<Key> absent = {})
 {
     require(scalar.size() == expected.size(), "Scalar table size differs from reference");
     require(grouped.size() == expected.size(), "Grouped table size differs from reference");
     require(cyclic.size() == expected.size(), "Cyclic grouped table size differs from reference");
+    std::vector<Key> batch;
     for (const auto & [key, value] : expected)
+    {
         checkLookup(scalar, grouped, cyclic, key, &value);
+        batch.push_back(key);
+    }
     checkLookup(scalar, grouped, cyclic, 0, nullptr);
+    batch.push_back(0);
+    batch.insert(batch.end(), absent);
+    checkBatches(scalar, grouped, cyclic, batch);
 }
 
 void testSizing()
@@ -99,6 +191,8 @@ void testSizing()
         checkLookup(scalar, grouped, cyclic, 0, nullptr);
         checkLookup(scalar, grouped, cyclic, 1, nullptr);
         checkLookup(scalar, grouped, cyclic, std::numeric_limits<Key>::max(), nullptr);
+        const std::array<Key, 3> absent = {0, 1, std::numeric_limits<Key>::max()};
+        checkBatches(scalar, grouped, cyclic, absent);
     }
 
     require(simd_ht::capacityFor(std::size_t{1} << 28) == (std::size_t{1} << 29), "Incorrect capacity for the largest benchmark");
@@ -155,7 +249,7 @@ void testSpecialKeys()
         cyclic.insert(key, half);
         expected[key] = half;
     }
-    checkContents(scalar, grouped, cyclic, expected);
+    checkContents(scalar, grouped, cyclic, expected, {(Key{17} << 32) | 17});
     checkLookup(scalar, grouped, cyclic, (Key{17} << 32) | 17, nullptr);
 
     expectThrows<std::invalid_argument>([&] { scalar.insert(0, 123); }, "Scalar table accepted the empty key");
@@ -185,7 +279,7 @@ void testInsertionLimit()
     grouped.insert(2, 0);
     cyclic.insert(2, 0);
     expected[2] = 0;
-    checkContents(scalar, grouped, cyclic, expected);
+    checkContents(scalar, grouped, cyclic, expected, {5});
     checkLookup(scalar, grouped, cyclic, 5, nullptr);
 }
 
@@ -210,7 +304,7 @@ void testWraparound()
         grouped.insert(keys[i], value);
         cyclic.insert(keys[i], value);
         expected[keys[i]] = value;
-        checkContents(scalar, grouped, cyclic, expected);
+        checkContents(scalar, grouped, cyclic, expected, {keys.back()});
         checkLookup(scalar, grouped, cyclic, keys.back(), nullptr);
     }
 
@@ -222,7 +316,7 @@ void testWraparound()
         cyclic.insert(key, key);
         expected[key] = key;
     }
-    checkContents(scalar, grouped, cyclic, expected);
+    checkContents(scalar, grouped, cyclic, expected, {keys.back()});
     checkLookup(scalar, grouped, cyclic, keys.back(), nullptr);
 }
 
@@ -253,6 +347,7 @@ void testGroupedPlacement()
             require(base % sizeof(simd_ht::Group) == 0 && address == base + offset, "SIMD grouped lookup used the wrong group or lane");
         }
         require(table.findSimd(keys.back()) == nullptr, "SIMD grouped lookup returned an absent key");
+        checkBatches(table, keys);
     }
 }
 
@@ -290,6 +385,7 @@ void testCyclicPlacement()
                 require(previous && *previous == j, "Cyclic insertion displaced an existing key");
             }
             require(table.findScalar(keys.back()) == nullptr, "Cyclic lookup returned an absent key");
+            checkBatches(table, keys);
         }
     }
 }
@@ -313,6 +409,7 @@ void testLargeGroupedTable()
         require(found && *found == i, "SIMD grouped lookup failed in a table of 2^27 groups");
         require(table.findSimd(keys[1000 + i]) == nullptr, "SIMD grouped lookup returned an absent key in a table of 2^27 groups");
     }
+    checkBatches(table, keys);
 }
 
 void testRandomReference()
@@ -351,13 +448,67 @@ void testRandomReference()
         }
         checkContents(scalar, grouped, cyclic, expected);
 
+        std::vector<Key> queries;
         for (std::size_t i = 0; i < 4096; ++i)
         {
             const Key key = i % 2 == 0 && !keys.empty() ? keys[random() % keys.size()] : random();
             const auto it = expected.find(key);
             checkLookup(scalar, grouped, cyclic, key, it == expected.end() ? nullptr : &it->second);
+            queries.push_back(key);
+        }
+        checkBatches(scalar, grouped, cyclic, queries);
+    }
+}
+
+// Batches shorter than, equal to and longer than the rings, with the empty key, repeated keys, hits and misses.
+void testBatchShapes()
+{
+    constexpr std::size_t distinct_keys = 1025;
+    ScalarTable scalar(distinct_keys);
+    GroupedTable grouped(distinct_keys);
+    CyclicGroupedTable cyclic(distinct_keys);
+    std::vector<Key> stored;
+    for (std::size_t i = 0; i < distinct_keys; ++i)
+    {
+        const Key key = simd_ht::keyForIndex(i);
+        scalar.insert(key, simd_ht::valueForKey(key));
+        grouped.insert(key, simd_ht::valueForKey(key));
+        cyclic.insert(key, simd_ht::valueForKey(key));
+        stored.push_back(key);
+    }
+
+    // NOLINTNEXTLINE(bugprone-random-generator-seed,cert-msc32-c,cert-msc51-cpp)
+    std::mt19937_64 random(0x2f5d6b1a9c3e7081ULL);
+    const auto next_key = [&](const std::vector<Key> & batch) -> Key
+    {
+        switch (random() % 6)
+        {
+            case 0: return 0;
+            case 1: return batch.empty() ? 0 : batch[random() % batch.size()];
+            case 2:
+            case 3: return stored[random() % stored.size()];
+            default: return simd_ht::keyForIndex(distinct_keys + random() % distinct_keys);
+        }
+    };
+    for (std::size_t length : {0, 1, 3, 4, 5, 31, 32, 33, 63, 64, 65, 1000})
+    {
+        for (std::size_t repeat = 0; repeat < 20; ++repeat)
+        {
+            std::vector<Key> batch;
+            while (batch.size() < length)
+                batch.push_back(next_key(batch));
+            checkBatches(scalar, grouped, cyclic, batch);
         }
     }
+
+    // A run of rows that never walk, then a ring full of walks.
+    std::vector<Key> empty_keys(40, 0);
+    checkBatches(scalar, grouped, cyclic, empty_keys);
+    empty_keys.insert(empty_keys.end(), stored.begin(), stored.begin() + 40);
+    checkBatches(scalar, grouped, cyclic, empty_keys);
+    // Every slot walks to the same key.
+    checkBatches(scalar, grouped, cyclic, std::vector<Key>(40, stored[7]));
+    checkBatches(scalar, grouped, cyclic, std::vector<Key>(40, simd_ht::keyForIndex(2 * distinct_keys)));
 }
 
 void testWorkloads()
@@ -403,6 +554,7 @@ void testWorkloads()
             require(hits == count * hit_percent / 100, "Query trace has an incorrect hit rate");
             require(workload.expected_hits == hits, "Workload expected hit count is incorrect");
             require(workload.expected_checksum == checksum, "Workload expected value checksum is incorrect");
+            checkBatches(scalar, grouped, cyclic, workload.queries);
         }
     }
 
@@ -432,6 +584,7 @@ int main()
         testGroupedPlacement();
         testCyclicPlacement();
         testRandomReference();
+        testBatchShapes();
         testWorkloads();
         // The tests run on one thread, and nothing modifies the environment.
         const char * large = std::getenv("OA_LARGE_TESTS"); // NOLINT(concurrency-mt-unsafe)
