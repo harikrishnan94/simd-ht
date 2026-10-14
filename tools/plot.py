@@ -16,13 +16,16 @@ KERNELS = (
     ("ScalarOA", "Linear probing", "#0072B2", "", 2.5),
     ("ScalarCyclicGroupedOA", "Cyclic scalar", "#009E73", "", 2.5),
     ("SIMDGroupedOA", "SIMD", "#D55E00", "", 3.5),
+    ("ScalarOA_AMAC32", "Linear probing, AMAC ring of 32", "#0072B2", "7 4", 2.5),
+    ("ScalarCyclicGroupedOA_AMAC32", "Cyclic scalar, AMAC ring of 32", "#009E73", "7 4", 2.5),
+    ("SIMDGroupedOA_AMAC32", "SIMD, AMAC ring of 32", "#D55E00", "7 4", 3.5),
 )
 PANELS = ((0, "All misses"), (50, "Half hits"), (100, "All hits"))
 # Neoverse V2 per-core L1D and L2, and the host's shared L3, as table bytes.
 CACHES = (("L1 64 KiB", 64 << 10), ("L2 2 MiB", 2 << 20), ("L3 36 MiB", 36 << 20))
 NAME = re.compile(r"(\w+)/keys:(\d+)/hit_percent:(\d+)/real_time")
 
-WIDTH, HEIGHT = 1200, 490
+WIDTH, HEIGHT = 1200, 515
 LEFT, TOP, PANEL_W, PANEL_H, GAP = 70, 92, 340, 300, 40
 
 
@@ -51,9 +54,10 @@ def main():
     parser.add_argument("sweep", nargs="+")
     args = parser.parse_args()
     medians, repetitions = load(args.sweep)
-    sizes = sorted({keys for _, keys, _ in medians})
+    kernels = [kernel for kernel in KERNELS if any(name == kernel[0] for name, _, _ in medians)]
+    sizes = sorted({keys for name, keys, _ in medians if name == KERNELS[0][0]})
     x_min, x_max = math.log2(sizes[0]), math.log2(sizes[-1])
-    y_max = 5 * math.ceil(max(medians.values()) / 5)
+    y_max = 5 * math.ceil(max(medians[(kernel[0], keys, hits)] for kernel in kernels for keys in sizes for hits, _ in PANELS) / 5)
 
     out = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{WIDTH}" height="{HEIGHT}" viewBox="0 0 {WIDTH} {HEIGHT}" '
@@ -90,20 +94,20 @@ def main():
                 out.append(f'<text x="{x:.1f}" y="{TOP + PANEL_H + 17}" font-size="11" text-anchor="middle" '
                            f'fill="#555">{size_label(keys)}</text>')
         out.append(f'<rect x="{x0}" y="{TOP}" width="{PANEL_W}" height="{PANEL_H}" fill="none" stroke="#bbb"/>')
-        for kernel, _, color, dash, width in KERNELS:
+        for kernel, _, color, dash, width in kernels:
             points = " ".join(f"{px(keys):.1f},{py(medians[(kernel, keys, hits)]):.1f}" for keys in sizes)
             dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
             out.append(f'<polyline points="{points}" fill="none" stroke="{color}" stroke-width="{width}"{dash_attr} '
                        'stroke-linejoin="round"/>')
     out.append(f'<text x="{LEFT + 1.5 * PANEL_W + GAP}" y="{TOP + PANEL_H + 38}" font-size="12" '
                'text-anchor="middle" fill="#555">Table size (32 bytes per key; 2^10 to 2^28 keys)</text>')
-    legend_x, legend_y = LEFT, HEIGHT - 32
-    for index, (_, label, color, dash, width) in enumerate(KERNELS):
-        x = legend_x + index * 220
+    for index, (_, label, color, dash, width) in enumerate(kernels):
+        x = LEFT + (index % 3) * 330
+        y = HEIGHT - 55 + (index // 3) * 22
         dash_attr = f' stroke-dasharray="{dash}"' if dash else ""
-        out.append(f'<line x1="{x}" x2="{x + 28}" y1="{legend_y}" y2="{legend_y}" stroke="{color}" '
+        out.append(f'<line x1="{x}" x2="{x + 36}" y1="{y}" y2="{y}" stroke="{color}" '
                    f'stroke-width="{width}"{dash_attr}/>')
-        out.append(f'<text x="{x + 34}" y="{legend_y + 4}" font-size="12" fill="#222">{label}</text>')
+        out.append(f'<text x="{x + 42}" y="{y + 4}" font-size="12" fill="#222">{label}</text>')
     out.append("</svg>")
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text("\n".join(out) + "\n")

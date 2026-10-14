@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <exception>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -20,7 +21,61 @@ void fail(benchmark::State & state, const std::string & message)
     state.SkipWithError(message);
 }
 
-template <class Table, auto Find>
+// The timed passes add the hits and the value checksum of every query. The AMAC passes ignore rows, so their rings store none.
+template <auto Find>
+struct PerKey
+{
+    template <class Table>
+    [[gnu::always_inline]] static void
+    run(const Table & table, const std::vector<simd_ht::Key> & queries, uint64_t & hits, uint64_t & checksum)
+    {
+        for (simd_ht::Key key : queries)
+        {
+            if (const simd_ht::Value * value = (table.*Find)(key))
+            {
+                ++hits;
+                checksum += *value;
+            }
+        }
+    }
+};
+
+template <size_t ring_size>
+struct Amac
+{
+    [[gnu::always_inline]] static void
+    run(const simd_ht::ScalarTable & table, const std::vector<simd_ht::Key> & queries, uint64_t & hits, uint64_t & checksum)
+    {
+        table.findAmac<ring_size>(queries, sum(hits, checksum));
+    }
+
+    [[gnu::always_inline]] static void
+    run(const simd_ht::CyclicGroupedTable & table, const std::vector<simd_ht::Key> & queries, uint64_t & hits, uint64_t & checksum)
+    {
+        table.findScalarAmac<ring_size>(queries, sum(hits, checksum));
+    }
+
+    [[gnu::always_inline]] static void
+    run(const simd_ht::GroupedTable & table, const std::vector<simd_ht::Key> & queries, uint64_t & hits, uint64_t & checksum)
+    {
+        table.findSimdAmac<ring_size>(queries, sum(hits, checksum));
+    }
+
+private:
+    [[gnu::always_inline]] static auto sum(uint64_t & hits, uint64_t & checksum)
+    {
+        return [&](const simd_ht::Value * value)
+        {
+            if (value)
+            {
+                ++hits;
+                checksum += *value;
+            }
+        };
+    }
+};
+
+template <class Table, class Pass>
 void lookup(benchmark::State & state)
 {
     using namespace simd_ht;
@@ -55,14 +110,7 @@ void lookup(benchmark::State & state)
             uint64_t hits = 0;
             uint64_t checksum = 0;
             counters.start();
-            for (Key key : workload.queries)
-            {
-                if (const Value * value = (table.*Find)(key))
-                {
-                    ++hits;
-                    checksum += *value;
-                }
-            }
+            Pass::run(table, workload.queries, hits, checksum);
             counters.stop();
             total_hits += hits;
             total_checksum += checksum;
@@ -102,6 +150,26 @@ void arguments(benchmark::internal::Benchmark * benchmark)
     benchmark->Unit(benchmark::kNanosecond)->UseRealTime();
 }
 
+// The ring-size sweep covers only 2^24 and 2^28 keys, the sizes of the counter runs.
+void ringSweepArguments(benchmark::internal::Benchmark * benchmark)
+{
+    benchmark->ArgNames({"keys", "hit_percent"});
+    for (unsigned exponent : {24, 28})
+        for (int64_t hit_percent : {0, 50, 100})
+            benchmark->Args({int64_t{1} << exponent, hit_percent});
+    benchmark->Unit(benchmark::kNanosecond)->UseRealTime();
+}
+
+template <size_t ring_size>
+void registerAmac(void (*apply)(benchmark::internal::Benchmark *))
+{
+    using namespace simd_ht;
+    const std::string suffix = "_AMAC" + std::to_string(ring_size);
+    benchmark::RegisterBenchmark("ScalarOA" + suffix, lookup<ScalarTable, Amac<ring_size>>)->Apply(apply);
+    benchmark::RegisterBenchmark("ScalarCyclicGroupedOA" + suffix, lookup<CyclicGroupedTable, Amac<ring_size>>)->Apply(apply);
+    benchmark::RegisterBenchmark("SIMDGroupedOA" + suffix, lookup<GroupedTable, Amac<ring_size>>)->Apply(apply);
+}
+
 }
 
 int main(int argc, char ** argv)
@@ -123,10 +191,17 @@ int main(int argc, char ** argv)
     benchmark::AddCustomContext("hash", "XOR-fold 64-bit key, MurmurHash3 fmix32");
     benchmark::AddCustomContext("query_seed", std::to_string(simd_ht::query_seed));
     benchmark::AddCustomContext("workload", "Distinct full-width keys; one shuffled N-key trace per batch");
-    benchmark::RegisterBenchmark("ScalarOA", lookup<simd_ht::ScalarTable, &simd_ht::ScalarTable::find>)->Apply(arguments);
-    benchmark::RegisterBenchmark("ScalarCyclicGroupedOA", lookup<simd_ht::CyclicGroupedTable, &simd_ht::CyclicGroupedTable::findScalar>)
+    benchmark::AddCustomContext("amac", "Ring of 32 lookups on every size; rings of 8, 16 and 64 at 2^24 and 2^28 keys");
+    benchmark::RegisterBenchmark("ScalarOA", lookup<simd_ht::ScalarTable, PerKey<&simd_ht::ScalarTable::find>>)->Apply(arguments);
+    benchmark::RegisterBenchmark(
+        "ScalarCyclicGroupedOA", lookup<simd_ht::CyclicGroupedTable, PerKey<&simd_ht::CyclicGroupedTable::findScalar>>)
         ->Apply(arguments);
-    benchmark::RegisterBenchmark("SIMDGroupedOA", lookup<simd_ht::GroupedTable, &simd_ht::GroupedTable::findSimd>)->Apply(arguments);
+    benchmark::RegisterBenchmark("SIMDGroupedOA", lookup<simd_ht::GroupedTable, PerKey<&simd_ht::GroupedTable::findSimd>>)
+        ->Apply(arguments);
+    registerAmac<32>(arguments);
+    registerAmac<8>(ringSweepArguments);
+    registerAmac<16>(ringSweepArguments);
+    registerAmac<64>(ringSweepArguments);
     benchmark::RunSpecifiedBenchmarks();
     benchmark::Shutdown();
     return benchmark_failed ? 1 : 0;
